@@ -11,14 +11,24 @@ public class SCERenderContext
 {
     private static SCERenderContext? _instance;
     private ISCEAdapter? _adapter;
+    private readonly Dictionary<object, object> _nativeParentOfChild = new();
+    private readonly HashSet<object> _boundButtonNative = [];
 
     public static SCERenderContext Instance => _instance ??= new SCERenderContext();
     public ISCEAdapter? Adapter { get => _adapter; set => _adapter = value; }
 
-    public void Initialize(ISCEAdapter adapter) => _adapter = adapter;
+    public void Initialize(ISCEAdapter adapter)
+    {
+        _adapter = adapter;
+    }
 
     public object? CreateNativeControl(FGUIObject obj)
     {
+        if (obj.NativeObject != null)
+        {
+            return obj.NativeObject;
+        }
+
         if (_adapter == null) return null;
         object? native = obj switch
         {
@@ -33,7 +43,11 @@ public class SCERenderContext
             FGUIComponent => _adapter.CreatePanel(),
             _ => _adapter.CreatePanel()
         };
-        if (native != null) { obj.NativeObject = native; ApplyProperties(obj); }
+        if (native != null)
+        {
+            obj.NativeObject = native;
+            ApplyProperties(obj);
+        }
         return native;
     }
     
@@ -117,10 +131,16 @@ public class SCERenderContext
         switch (obj)
         {
             case FGUIImage image: ApplyImageProperties(image, native); break;
+            case FGUILoader loader: ApplyLoaderProperties(loader, native); break;
             case FGUITextField text: ApplyTextProperties(text, native); break;
             case FGUIButton button: ApplyButtonProperties(button, native); break;
             case FGUIComponent component: ApplyComponentProperties(component, native); break;
         }
+    }
+
+    private static void ApplyLoaderProperties(FGUILoader loader, object native)
+    {
+        loader.SyncNativeContent();
     }
 
     private void ApplyImageProperties(FGUIImage image, object native)
@@ -133,10 +153,8 @@ public class SCERenderContext
             var atlas = sprite.Atlas;
             if (atlas?.File != null)
             {
-                // Convert FGUI atlas path to SCE image path
-                // FGUI: "Basics_atlas0.png" -> SCE: "image/ui/Basics_atlas0.png"
-                string atlasFileName = Path.GetFileName(atlas.File);
-                string sceImagePath = $"image/ui/{atlasFileName}";
+                // Resolve atlas path while preserving sub-directory mapping when package path contains one.
+                string sceImagePath = ResolveSceImagePath(atlas);
                 
                 // 获取缩放因子
                 float scaleFactor = FGUIManager.ContentScaleFactor;
@@ -176,6 +194,64 @@ public class SCERenderContext
         }
     }
 
+    private static string ResolveSceImagePath(PackageItem atlasItem)
+    {
+        var atlasFile = NormalizePath(atlasItem.File);
+        if (string.IsNullOrEmpty(atlasFile))
+        {
+            return "image/ui/unknown.png";
+        }
+
+        if (atlasFile.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+        {
+            return atlasFile;
+        }
+
+        if (atlasFile.StartsWith("ui/image/", StringComparison.OrdinalIgnoreCase))
+        {
+            return atlasFile.Substring(3);
+        }
+
+        var atlasFileName = Path.GetFileName(atlasFile);
+
+        var packageAssetPath = NormalizePath(atlasItem.Owner?.AssetPath);
+        if (!string.IsNullOrEmpty(packageAssetPath))
+        {
+            var packageDir = NormalizePath(Path.GetDirectoryName(packageAssetPath)).Trim('/');
+            if (packageDir.Equals("ui", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"image/ui/{atlasFileName}";
+            }
+
+            if (packageDir.StartsWith("ui/image/", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"{packageDir.Substring(3)}/{atlasFileName}";
+            }
+
+            if (packageDir.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"{packageDir}/{atlasFileName}";
+            }
+
+            if (!string.IsNullOrEmpty(packageDir))
+            {
+                return $"image/{packageDir}/{atlasFileName}";
+            }
+        }
+
+        return $"image/ui/{atlasFileName}";
+    }
+
+    private static string NormalizePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return string.Empty;
+        }
+
+        return path.Replace('\\', '/').TrimStart('/');
+    }
+
     private void ApplyTextProperties(FGUITextField text, object native)
     {
         if (_adapter == null) return;
@@ -199,9 +275,12 @@ public class SCERenderContext
     {
         if (_adapter == null) return;
         ApplyComponentProperties(button, native);
-        _adapter.OnClick(native, () => button.DispatchEvent("onClick", null));
-        _adapter.OnPointerEnter(native, () => button.DispatchEvent("onRollOver", null));
-        _adapter.OnPointerLeave(native, () => button.DispatchEvent("onRollOut", null));
+        if (_boundButtonNative.Add(native))
+        {
+            _adapter.OnClick(native, () => button.DispatchEvent("onClick", null));
+            _adapter.OnPointerEnter(native, () => button.DispatchEvent("onRollOver", null));
+            _adapter.OnPointerLeave(native, () => button.DispatchEvent("onRollOut", null));
+        }
     }
 
     private void ApplyComponentProperties(FGUIComponent component, object native)
@@ -214,6 +293,17 @@ public class SCERenderContext
     public void RenderChild(FGUIComponent parent, FGUIObject child)
     {
         if (_adapter == null) return;
+
+        if (!child.FinalVisible)
+        {
+            if (child.NativeObject != null)
+            {
+                RemoveFromParent(child);
+            }
+
+            return;
+        }
+
         var childNative = CreateNativeControl(child);
         if (childNative == null) 
         {
@@ -222,7 +312,18 @@ public class SCERenderContext
         }
         if (parent.NativeObject != null) 
         {
-            _adapter.AddChild(parent.NativeObject, childNative);
+            var parentNative = parent.NativeObject;
+            if (_nativeParentOfChild.TryGetValue(childNative, out var attachedParent))
+            {
+                if (ReferenceEquals(attachedParent, parentNative))
+                {
+                    return;
+                }
+                _adapter.RemoveChild(attachedParent, childNative);
+            }
+
+            _adapter.AddChild(parentNative, childNative);
+            _nativeParentOfChild[childNative] = parentNative;
             float scaleFactor = FGUIManager.ContentScaleFactor;
             Game.Logger.LogInformation($"[FGUI] RenderChild: Added '{child.Name}' ({child.GetType().Name}) to '{parent.Name}', text='{child.Text}', pos=({child.X * scaleFactor:F0},{child.Y * scaleFactor:F0}), size=({child.Width * scaleFactor:F0}x{child.Height * scaleFactor:F0}), scale={scaleFactor:F2}");
         }
@@ -276,13 +377,53 @@ public class SCERenderContext
         }
     }
 
-    public void RemoveFromParent(FGUIObject obj) { if (_adapter != null && obj.NativeObject != null) _adapter.RemoveFromParent(obj.NativeObject); }
+    public void RemoveFromParent(FGUIObject obj)
+    {
+        if (_adapter == null || obj.NativeObject == null) return;
+        _adapter.RemoveFromParent(obj.NativeObject);
+        ClearNativeAttachmentTracking(obj.NativeObject, clearChildren: false);
+    }
 
     public void DisposeNative(FGUIObject obj)
     {
         if (_adapter == null || obj.NativeObject == null) return;
-        _adapter.Dispose(obj.NativeObject);
+        var native = obj.NativeObject;
+        _boundButtonNative.Remove(native);
+        _adapter.Dispose(native);
+        ClearNativeAttachmentTracking(native, clearChildren: true);
         obj.NativeObject = null;
     }
+
+    private void ClearNativeAttachmentTracking(object native, bool clearChildren)
+    {
+        _nativeParentOfChild.Remove(native);
+        if (!clearChildren || _nativeParentOfChild.Count == 0)
+        {
+            return;
+        }
+
+        List<object>? danglingChildren = null;
+        foreach (var pair in _nativeParentOfChild)
+        {
+            if (!ReferenceEquals(pair.Value, native))
+            {
+                continue;
+            }
+
+            danglingChildren ??= [];
+            danglingChildren.Add(pair.Key);
+        }
+
+        if (danglingChildren == null)
+        {
+            return;
+        }
+
+        foreach (var childNative in danglingChildren)
+        {
+            _nativeParentOfChild.Remove(childNative);
+        }
+    }
+
 }
 #endif

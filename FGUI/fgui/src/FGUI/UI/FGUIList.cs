@@ -18,13 +18,17 @@ public class FGUIList : FGUIComponent
     private int _lastSelectedIndex = -1;
     private readonly List<int> _selectedIndices = new();
     private bool _virtual;
+    private bool _scrollItemToViewOnClick;
+    private bool _foldInvisibleItems;
     private int _numItems, _firstIndex;
     private float _itemWidth, _itemHeight;
     
     // SCE VirtualizingPanel bridge
     private object? _virtualPanel;
     private bool _useNativeVirtual;
+    private bool _isDisposing;
     private readonly Dictionary<int, FGUIObject> _virtualItems = new();
+    private readonly Dictionary<object, object> _nativeVirtualSlotChildren = new();
     
     // 事件监听器
     private EventListener? _onClickItem;
@@ -557,10 +561,18 @@ public class FGUIList : FGUIComponent
                     ItemRenderer?.Invoke(index, item);
 
                     // Sync FGUI item to native control
-                    if (item.NativeObject != null)
+                    var itemNative = item.NativeObject ?? SCERenderContext.Instance.CreateNativeControl(item);
+                    if (itemNative != null)
                     {
+                        if (_nativeVirtualSlotChildren.TryGetValue(nativeControl, out var previousNative) &&
+                            !ReferenceEquals(previousNative, itemNative))
+                        {
+                            adapter.RemoveChild(nativeControl, previousNative);
+                        }
+
                         // The native control from VirtualizingPanel should be used as parent
-                        adapter.AddChild(nativeControl, item.NativeObject);
+                        adapter.AddChild(nativeControl, itemNative);
+                        _nativeVirtualSlotChildren[nativeControl] = itemNative;
                     }
                 }
             });
@@ -1269,7 +1281,11 @@ public class FGUIList : FGUIComponent
     public override void Setup_BeforeAdd(ByteBuffer buffer, int beginPos)
     {
         base.Setup_BeforeAdd(buffer, beginPos);
-        buffer.Seek(beginPos, 5);
+        if (!buffer.Seek(beginPos, 5))
+        {
+            return;
+        }
+
         _layout = (ListLayoutType)buffer.ReadByte();
         _selectionMode = (ListSelectionMode)buffer.ReadByte();
         _align = (AlignType)buffer.ReadByte();
@@ -1279,32 +1295,102 @@ public class FGUIList : FGUIComponent
         _lineCount = buffer.ReadShort();
         _columnCount = buffer.ReadShort();
         _autoResizeItem = buffer.ReadBool();
-        _defaultItem = buffer.ReadS();
-        if (buffer.ReadBool())
+
+        try
         {
-            _itemWidth = buffer.ReadFloat();
-            _itemHeight = buffer.ReadFloat();
+            _childrenRenderOrder = (ChildrenRenderOrder)buffer.ReadByte();
+            _apexIndex = buffer.ReadShort();
+
+            if (buffer.ReadBool())
+            {
+                _margin.Top = buffer.ReadInt();
+                _margin.Bottom = buffer.ReadInt();
+                _margin.Left = buffer.ReadInt();
+                _margin.Right = buffer.ReadInt();
+            }
+
+            var overflow = (OverflowType)buffer.ReadByte();
+            if (overflow == OverflowType.Scroll)
+            {
+                var savedPos = buffer.Position;
+                if (buffer.Seek(beginPos, 7))
+                {
+                    SetupScroll(buffer);
+                }
+
+                buffer.Position = savedPos;
+            }
+            else
+            {
+                SetupOverflowAndClip(overflow);
+            }
+
+            if (buffer.ReadBool())
+            {
+                buffer.Skip(8); // clipSoftness
+            }
+
+            if (buffer.Version >= 2)
+            {
+                _scrollItemToViewOnClick = buffer.ReadBool();
+                _foldInvisibleItems = buffer.ReadBool();
+            }
         }
+        catch (Exception ex)
+        {
+            Game.Logger.LogWarning(ex,
+                "[FGUI][LIST] block5 parse fallback name={Name} beginPos={BeginPos}",
+                Name, beginPos);
+        }
+
+        string? defaultItem = null;
+        if (buffer.Seek(beginPos, 8))
+        {
+            try
+            {
+                defaultItem = buffer.ReadS();
+            }
+            catch (Exception ex)
+            {
+                Game.Logger.LogWarning(ex,
+                    "[FGUI][LIST] block8 defaultItem parse failed name={Name} beginPos={BeginPos}",
+                    Name, beginPos);
+            }
+        }
+
+        _defaultItem = defaultItem;
     }
     
     public override void Dispose()
     {
-        // Clean up virtual items
-        foreach (var item in _virtualItems.Values)
+        if (Disposed || _isDisposing) return;
+        _isDisposing = true;
+
+        try
         {
-            item.Dispose();
+            // Snapshot first: item.Dispose may indirectly mutate list internals.
+            var virtualItems = new List<FGUIObject>(_virtualItems.Values);
+            _virtualItems.Clear();
+            for (var i = virtualItems.Count - 1; i >= 0; i--)
+            {
+                virtualItems[i].Dispose();
+            }
+
+            // Clean up virtual panel
+            var adapter = SCERenderContext.Instance.Adapter;
+            if (_virtualPanel != null && adapter != null)
+            {
+                adapter.Dispose(_virtualPanel);
+                _virtualPanel = null;
+            }
+
+            _nativeVirtualSlotChildren.Clear();
+            base.Dispose();
         }
-        _virtualItems.Clear();
-        
-        // Clean up virtual panel
-        var adapter = SCERenderContext.Instance.Adapter;
-        if (_virtualPanel != null && adapter != null)
+        finally
         {
-            adapter.Dispose(_virtualPanel);
-            _virtualPanel = null;
+            _isDisposing = false;
         }
-        
-        base.Dispose();
     }
 
     public void EnableArrowKeyNavigation(bool enabled)
