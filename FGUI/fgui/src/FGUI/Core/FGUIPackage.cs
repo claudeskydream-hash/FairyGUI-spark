@@ -154,7 +154,7 @@ public class FGUIPackage
         if (Id != null && _packageInstById.TryGetValue(Id, out var existingPkg))
         {
             if (Name != existingPkg.Name)
-                Console.WriteLine($"FGUI: Package conflicts, '{Name}' and '{existingPkg.Name}'");
+                Game.Logger.LogWarning("[FGUI] Package conflicts, '{Name}' and '{ExistingName}'", Name, existingPkg.Name);
             return false;
         }
 
@@ -376,7 +376,7 @@ public class FGUIPackage
     {
         if (!_itemsByName.TryGetValue(resName, out var pi))
         {
-            Console.WriteLine($"FGUI: resource not found - {resName} in {Name}");
+            Game.Logger.LogWarning("[FGUI] Resource not found: {ResName} in {PackageName}", resName, Name);
             return null;
         }
         return CreateObject(pi);

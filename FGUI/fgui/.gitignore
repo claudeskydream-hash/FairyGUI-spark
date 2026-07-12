@@ -10,3 +10,7 @@ src/obj
 AppBundle
 ui/AppBundle
 /src/WasiCoreSDK.props
+
+# 构建/调试日志与 IDE 个人设置，不应纳入版本控制
+*.log
+*.DotSettings.user
