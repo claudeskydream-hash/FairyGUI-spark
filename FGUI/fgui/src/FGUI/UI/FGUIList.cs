@@ -1,12 +1,12 @@
 #if CLIENT
-using SCEFGUI.Core;
-using SCEFGUI.Utils;
-using SCEFGUI.Render;
-using SCEFGUI.Event;
+using System.Diagnostics;
+using FairyGUI;
+using FairyGUI.Utils;
+using FairyGUI.Render;
 
-namespace SCEFGUI.UI;
+namespace FairyGUI;
 
-public class FGUIList : FGUIComponent
+public class GList : GComponent
 {
     private ListLayoutType _layout = ListLayoutType.SingleColumn;
     private int _lineCount, _columnCount, _lineGap, _columnGap;
@@ -26,15 +26,29 @@ public class FGUIList : FGUIComponent
     // SCE VirtualizingPanel bridge
     private object? _virtualPanel;
     private bool _useNativeVirtual;
+    private bool _virtualPanelAttached;
+    private bool _virtualScrollListenerBound;
     private bool _isDisposing;
-    private readonly Dictionary<int, FGUIObject> _virtualItems = new();
+    private readonly Dictionary<int, GObject> _virtualItems = new();
     private readonly Dictionary<object, object> _nativeVirtualSlotChildren = new();
+    private readonly HashSet<GObject> _boundItemClickHandlers = new();
+    private readonly Dictionary<string, Stack<GObject>> _itemPool = new(StringComparer.Ordinal);
+    private readonly Dictionary<GObject, string> _itemPoolKeyByObject = new();
+    private bool _batchAddingItems;
+    private int _batchUpdateDepth;
+    private const int MaxPoolSizePerKey = 128;
+    private const bool EnablePoolDiagLogs = false;
+    private const bool EnableListPerfDiagLogs = false;
+    private const int PoolDiagLogLimit = 200;
+    private const int ListPerfLogLimit = 120;
+    private int _poolDiagLogCount;
+    private int _listPerfLogCount;
     
     // 事件监听器
     private EventListener? _onClickItem;
     private EventListener? _onRightClickItem;
 
-    public Action<int, FGUIObject>? ItemRenderer { get; set; }
+    public Action<int, GObject>? ItemRenderer { get; set; }
     public Func<int, string?>? ItemProvider { get; set; }
     
     /// <summary>
@@ -58,6 +72,28 @@ public class FGUIList : FGUIComponent
     public ListSelectionMode SelectionMode { get => _selectionMode; set => _selectionMode = value; }
     public string? DefaultItem { get => _defaultItem; set => _defaultItem = value; }
     public bool IsVirtual => _virtual;
+    internal bool IsUsingNativeVirtualization => _virtual && _useNativeVirtual;
+    internal bool SuppressAutoEnsureBounds => _batchAddingItems || _batchUpdateDepth > 0;
+
+    public void BeginUpdate()
+    {
+        _batchUpdateDepth++;
+    }
+
+    public void EndUpdate()
+    {
+        if (_batchUpdateDepth <= 0)
+        {
+            _batchUpdateDepth = 0;
+            return;
+        }
+
+        _batchUpdateDepth--;
+        if (_batchUpdateDepth == 0 && !_virtual && !UnderConstruct)
+        {
+            EnsureBoundsCorrect();
+        }
+    }
 
     public int NumItems
     {
@@ -67,9 +103,27 @@ public class FGUIList : FGUIComponent
             if (_virtual) { if (_numItems != value) { _numItems = value; RefreshVirtualList(); } }
             else
             {
-                int count = _children.Count;
-                if (value > count) { for (int i = count; i < value; i++) AddItemFromPool(); }
-                else RemoveChildrenToPool(value, count);
+                BeginUpdate();
+                try
+                {
+                    int count = _children.Count;
+                    if (value > count) { for (int i = count; i < value; i++) AddItemFromPool(); }
+                    else RemoveChildrenToPool(value, count);
+
+                    // FairyGUI semantics: in non-virtual mode, itemRenderer + NumItems
+                    // should still populate each item by index.
+                    if (ItemRenderer != null)
+                    {
+                        for (int i = 0; i < _children.Count; i++)
+                        {
+                            ItemRenderer(i, _children[i]);
+                        }
+                    }
+                }
+                finally
+                {
+                    EndUpdate();
+                }
             }
         }
     }
@@ -83,6 +137,7 @@ public class FGUIList : FGUIComponent
         { 
             _virtual = true; 
             RemoveChildren();
+            BindVirtualScrollListener();
             
             // Create SCE VirtualizingPanel if adapter supports it
             var adapter = SCERenderContext.Instance.Adapter;
@@ -94,11 +149,18 @@ public class FGUIList : FGUIComponent
                     _useNativeVirtual = true;
                     
                     // Configure the panel
+                    // 交叉轴撑满：单列列表(垂直主轴) item 宽度=列表宽；单行列表(水平主轴) item 高度=列表高。
+                    // 对齐 FairyGUI autoResizeItem 语义，否则槽宽只用 item 设计宽，item 不随列表缩放。
+                    bool isHorizontal = _layout == ListLayoutType.SingleRow || _layout == ListLayoutType.FlowVertical;
                     var config = new VirtualPanelConfig
                     {
-                        ItemWidth = _itemWidth > 0 ? _itemWidth : Width,
-                        ItemHeight = _itemHeight > 0 ? _itemHeight : 50,
-                        IsHorizontal = _layout == ListLayoutType.SingleRow || _layout == ListLayoutType.FlowVertical
+                        ItemWidth = (!isHorizontal && _autoResizeItem && Width > 0)
+                            ? Width
+                            : (_itemWidth > 0 ? _itemWidth : Width),
+                        ItemHeight = (isHorizontal && _autoResizeItem && Height > 0)
+                            ? Height
+                            : (_itemHeight > 0 ? _itemHeight : 50),
+                        IsHorizontal = isHorizontal
                     };
                     adapter.SetVirtualizingPanelConfig(_virtualPanel, config);
                     
@@ -107,11 +169,17 @@ public class FGUIList : FGUIComponent
                     {
                         adapter.AddChild(NativeObject, _virtualPanel);
                         adapter.SetSize(_virtualPanel, Width, Height);
+                        _virtualPanelAttached = true;
+                    }
+                    else
+                    {
+                        _virtualPanelAttached = false;
                     }
                 }
                 catch
                 {
                     _useNativeVirtual = false;
+                    _virtualPanelAttached = false;
                 }
             }
         } 
@@ -119,12 +187,14 @@ public class FGUIList : FGUIComponent
     
     public void SetVirtualAndLoop() => SetVirtual();
 
-    public FGUIObject AddItemFromPool(string? url = null)
+    public GObject AddItemFromPool(string? url = null)
     {
         url ??= _defaultItem;
         if (string.IsNullOrEmpty(url)) throw new InvalidOperationException("DefaultItem not set");
         var obj = GetFromPool(url);
         if (obj == null) throw new InvalidOperationException($"Failed to create item from '{url}'");
+
+        ApplyListItemSafetyPipeline(obj);
         
         // 注册点击事件
         SetupItemClickHandler(obj);
@@ -135,8 +205,13 @@ public class FGUIList : FGUIComponent
     /// <summary>
     /// 为列表项设置点击事件处理
     /// </summary>
-    private void SetupItemClickHandler(FGUIObject item)
+    private void SetupItemClickHandler(GObject item)
     {
+        if (!_boundItemClickHandlers.Add(item))
+        {
+            return;
+        }
+
         // 左键点击
         item.OnClick.Add((ctx) =>
         {
@@ -167,7 +242,7 @@ public class FGUIList : FGUIComponent
     /// <summary>
     /// 分发列表项事件
     /// </summary>
-    private void DispatchItemEvent(FGUIObject item, EventContext sourceCtx, bool isRightClick)
+    private void DispatchItemEvent(GObject item, EventContext sourceCtx, bool isRightClick)
     {
         int index = GetChildIndex(item);
         if (_virtual)
@@ -232,42 +307,135 @@ public class FGUIList : FGUIComponent
             _onClickItem?.Call(ctx);
     }
 
-    private FGUIObject? GetFromPool(string url)
+    private GObject? GetFromPool(string url)
     {
-        PackageItem? item = null;
-        
-        // First try to parse as URL
-        item = FGUIPackage.GetItemByURL(url);
-        
-        // If not a valid URL and we have a parent with PackageItem, 
-        // it might be just an item ID from the same package
-        if (item == null && !url.StartsWith(FGUIPackage.URL_PREFIX))
+        if (!TryResolvePoolItem(url, out var item, out var poolKey) || item?.Owner == null)
         {
-            // Try to find in parent's package
+            return null;
+        }
+
+        if (_itemPool.TryGetValue(poolKey, out var stack) && stack.Count > 0)
+        {
+            var reused = stack.Pop();
+            _itemPoolKeyByObject[reused] = poolKey;
+            PreparePooledItemForReuse(reused);
+            LogPoolDiag("reuse", poolKey, stack.Count, "ok");
+            return reused;
+        }
+
+        var created = item.Owner.CreateObject(item);
+        if (created != null)
+        {
+            _itemPoolKeyByObject[created] = poolKey;
+            var poolCount = _itemPool.TryGetValue(poolKey, out var createdStack) ? createdStack.Count : 0;
+            LogPoolDiag("create", poolKey, poolCount, "miss");
+        }
+
+        return created;
+    }
+
+    private void ApplyListItemSafetyPipeline(GObject itemRoot)
+    {
+        _ = itemRoot;
+    }
+
+    private void ReturnToPool(GObject obj)
+    {
+        if (obj.Disposed)
+        {
+            _boundItemClickHandlers.Remove(obj);
+            _itemPoolKeyByObject.Remove(obj);
+            LogPoolDiag("drop", "<unknown>", 0, "disposed");
+            return;
+        }
+
+        if (!_itemPoolKeyByObject.TryGetValue(obj, out var poolKey) || string.IsNullOrWhiteSpace(poolKey))
+        {
+            _boundItemClickHandlers.Remove(obj);
+            obj.Dispose();
+            LogPoolDiag("drop", "<unknown>", 0, "no-key");
+            return;
+        }
+
+        if (!_itemPool.TryGetValue(poolKey, out var stack))
+        {
+            stack = new Stack<GObject>();
+            _itemPool[poolKey] = stack;
+        }
+
+        if (stack.Count >= MaxPoolSizePerKey)
+        {
+            _boundItemClickHandlers.Remove(obj);
+            _itemPoolKeyByObject.Remove(obj);
+            obj.Dispose();
+            LogPoolDiag("drop", poolKey, stack.Count, "overflow");
+            return;
+        }
+
+        PreparePooledItemForRecycle(obj);
+        stack.Push(obj);
+        LogPoolDiag("recycle", poolKey, stack.Count, "ok");
+    }
+
+    private static void PreparePooledItemForRecycle(GObject obj)
+    {
+        obj.Visible = true;
+        obj.Touchable = true;
+        obj.Grayed = false;
+        obj.Alpha = 1f;
+        obj.Rotation = 0f;
+        obj.SetScale(1f, 1f);
+        obj.SetXY(0f, 0f);
+        if (obj is GButton button)
+        {
+            button.Selected = false;
+        }
+    }
+
+    private static void PreparePooledItemForReuse(GObject obj)
+    {
+        obj.Visible = true;
+        obj.Touchable = true;
+        obj.Grayed = false;
+        obj.Alpha = 1f;
+        obj.Rotation = 0f;
+        obj.SetScale(1f, 1f);
+    }
+
+    private bool TryResolvePoolItem(string url, out PackageItem? item, out string poolKey)
+    {
+        item = UIPackage.GetItemByURL(url);
+
+        // If not a valid URL and we have a parent with PackageItem,
+        // it might be just an item ID/name from the same package.
+        if (item == null && !url.StartsWith(UIPackage.URL_PREFIX))
+        {
             var ownerPackage = PackageItem?.Owner;
             if (ownerPackage != null)
             {
                 item = ownerPackage.GetItem(url);
-                // Also try by name
                 item ??= ownerPackage.GetItemByName(url);
             }
-            
-            // If still not found, search all packages
+
             if (item == null)
             {
-                foreach (var pkg in FGUIPackage.GetPackages())
+                foreach (var pkg in UIPackage.GetPackages())
                 {
                     item = pkg.GetItem(url);
                     if (item != null) break;
                 }
             }
         }
-        
-        if (item?.Owner == null) return null;
-        return item.Owner.CreateObject(item);
-    }
 
-    private void ReturnToPool(FGUIObject obj) => obj.Dispose();
+        if (item?.Owner == null || string.IsNullOrWhiteSpace(item.Id))
+        {
+            poolKey = string.Empty;
+            return false;
+        }
+
+        poolKey = $"{item.Owner.Id}:{item.Id}";
+        return true;
+    }
 
     public void RemoveChildrenToPool(int beginIndex = 0, int endIndex = -1)
     {
@@ -275,7 +443,7 @@ public class FGUIList : FGUIComponent
         for (int i = endIndex - 1; i >= beginIndex; i--) ReturnToPool(RemoveChildAt(i));
     }
 
-    public FGUIObject GetItemAt(int index)
+    public GObject GetItemAt(int index)
     {
         if (_virtual)
         {
@@ -293,7 +461,7 @@ public class FGUIList : FGUIComponent
         {
             _selectedIndices.Add(index);
             _lastSelectedIndex = index;
-            if (!_virtual && index < _children.Count) { var obj = _children[index] as FGUIButton; if (obj != null) obj.Selected = true; }
+            if (!_virtual && index < _children.Count) { var obj = _children[index] as GButton; if (obj != null) obj.Selected = true; }
         }
     }
 
@@ -301,7 +469,7 @@ public class FGUIList : FGUIComponent
     {
         if (_selectedIndices.Remove(index) && !_virtual && index < _children.Count)
         {
-            var obj = _children[index] as FGUIButton;
+            var obj = _children[index] as GButton;
             if (obj != null) obj.Selected = false;
         }
     }
@@ -309,7 +477,7 @@ public class FGUIList : FGUIComponent
     public void ClearSelection()
     {
         foreach (int index in _selectedIndices.ToArray())
-            if (!_virtual && index < _children.Count) { var obj = _children[index] as FGUIButton; if (obj != null) obj.Selected = false; }
+            if (!_virtual && index < _children.Count) { var obj = _children[index] as GButton; if (obj != null) obj.Selected = false; }
         _selectedIndices.Clear();
     }
 
@@ -483,6 +651,8 @@ public class FGUIList : FGUIComponent
     /// <param name="minSize">最小尺寸</param>
     public void ResizeToFit(int itemCount = int.MaxValue, int minSize = 0)
     {
+        EnsureItemSizeHintsFromChildren();
+
         if (itemCount > NumItems)
             itemCount = NumItems;
 
@@ -534,6 +704,31 @@ public class FGUIList : FGUIComponent
     private int _curLineItemCount2 = 1;
     private bool _virtualListChanged = true;
 
+    /// <summary>
+    /// 让 item 在交叉轴上撑满列表（对齐 FairyGUI autoResizeItem）：
+    /// 单列列表撑满宽度，单行列表撑满高度；主轴尺寸保持 item 自身。
+    /// </summary>
+    private void ApplyItemCrossAxisSize(GObject item)
+    {
+        if (!_autoResizeItem)
+        {
+            return;
+        }
+
+        bool isHorizontal = _layout == ListLayoutType.SingleRow || _layout == ListLayoutType.FlowVertical;
+        if (isHorizontal)
+        {
+            if (Height > 0f)
+            {
+                item.SetSize(item.Width, Height, true);
+            }
+        }
+        else if (Width > 0f)
+        {
+            item.SetSize(Width, item.Height, true);
+        }
+    }
+
     private void RefreshVirtualList()
     {
         if (!_virtual) return;
@@ -543,8 +738,11 @@ public class FGUIList : FGUIComponent
         // Use SCE native VirtualizingPanel if available
         if (_useNativeVirtual && _virtualPanel != null && adapter != null)
         {
+            var renderedByNativeVirtual = false;
+            EnsureNativeVirtualPanelAttached(adapter);
             adapter.SetVirtualizingPanelItems(_virtualPanel, _numItems, (index, nativeControl) =>
             {
+                renderedByNativeVirtual = true;
                 // Get or create FGUI item for this index
                 if (!_virtualItems.TryGetValue(index, out var item))
                 {
@@ -559,6 +757,9 @@ public class FGUIList : FGUIComponent
                 {
                     // Call user's ItemRenderer
                     ItemRenderer?.Invoke(index, item);
+
+                    // 交叉轴撑满列表（autoResizeItem）：否则 item 保持设计宽(如 300)，不随列表宽度缩放
+                    ApplyItemCrossAxisSize(item);
 
                     // Sync FGUI item to native control
                     var itemNative = item.NativeObject ?? SCERenderContext.Instance.CreateNativeControl(item);
@@ -578,10 +779,18 @@ public class FGUIList : FGUIComponent
             });
 
             adapter.RefreshVirtualizingPanel(_virtualPanel);
-            return;
+            if (renderedByNativeVirtual || _numItems <= 0)
+            {
+                return;
+            }
+
+            // Native virtualization callback did not fire; fall back to manual virtual path.
+            _useNativeVirtual = false;
         }
 
-        // Manual virtualization implementation
+        // Manual fallback implementation (stability-first):
+        // when native virtual panel is unavailable, render all items once and let native scroll container
+        // handle viewport movement. This avoids repeated recycle/reposition jitter.
         if (ScrollPane == null)
             return;
 
@@ -688,9 +897,7 @@ public class FGUIList : FGUIComponent
         }
 
         ScrollPane.SetContentSize(cw, ch);
-
-        // Handle scroll to show visible items
-        HandleScroll();
+        RenderManualFallbackAllItems();
     }
 
     /// <summary>
@@ -750,8 +957,8 @@ public class FGUIList : FGUIComponent
         newFirstIndex = Math.Max(0, Math.Min(newFirstIndex, _numItems - 1));
         newLastIndex = Math.Max(0, Math.Min(newLastIndex, _numItems - 1));
 
-        // Update visible items if range changed
-        if (newFirstIndex != _firstIndex || newLastIndex - newFirstIndex + 1 != _children.Count)
+        var rangeChanged = newFirstIndex != _firstIndex || newLastIndex - newFirstIndex + 1 != _children.Count;
+        if (rangeChanged)
         {
             _firstIndex = newFirstIndex;
             int visibleCount = newLastIndex - newFirstIndex + 1;
@@ -767,19 +974,18 @@ public class FGUIList : FGUIComponent
                 ReturnToPool(RemoveChildAt(_children.Count - 1));
             }
 
-            // Update item positions and call renderer
+        }
+
+        if (rangeChanged)
+        {
             for (int i = 0; i < _children.Count; i++)
             {
                 int itemIndex = _firstIndex + i;
                 if (itemIndex >= _numItems) break;
 
                 var child = _children[i];
-
-                // Calculate position based on layout
                 CalculateItemPosition(itemIndex, out float x, out float y);
                 child.SetXY(x, y);
-
-                // Call item renderer
                 ItemRenderer?.Invoke(itemIndex, child);
             }
         }
@@ -830,7 +1036,7 @@ public class FGUIList : FGUIComponent
         }
     }
     
-    private FGUIObject? CreateItemFromPool()
+    private GObject? CreateItemFromPool()
     {
         if (string.IsNullOrEmpty(_defaultItem)) return null;
         return GetFromPool(_defaultItem);
@@ -864,7 +1070,7 @@ public class FGUIList : FGUIComponent
         }
 
         int i, j = 0;
-        FGUIObject child;
+        GObject child;
         float curX = 0;
         float curY = 0;
         float cw, ch;
@@ -1338,13 +1544,12 @@ public class FGUIList : FGUIComponent
         }
         catch (Exception ex)
         {
-            Game.Logger.LogWarning(ex,
-                "[FGUI][LIST] block5 parse fallback name={Name} beginPos={BeginPos}",
-                Name, beginPos);
+            System.GC.KeepAlive(0);
         }
 
         string? defaultItem = null;
-        if (buffer.Seek(beginPos, 8))
+        var hasItemsBlock = buffer.Seek(beginPos, 8);
+        if (hasItemsBlock)
         {
             try
             {
@@ -1352,13 +1557,262 @@ public class FGUIList : FGUIComponent
             }
             catch (Exception ex)
             {
-                Game.Logger.LogWarning(ex,
-                    "[FGUI][LIST] block8 defaultItem parse failed name={Name} beginPos={BeginPos}",
-                    Name, beginPos);
+                System.GC.KeepAlive(0);
             }
         }
 
         _defaultItem = defaultItem;
+        if (hasItemsBlock)
+        {
+            ReadItems(buffer);
+        }
+    }
+
+    protected virtual void ReadItems(ByteBuffer buffer)
+    {
+        var itemCount = 0;
+        var perfStart = EnableListPerfDiagLogs ? Stopwatch.GetTimestamp() : 0L;
+        var addedCount = 0;
+        try
+        {
+            itemCount = buffer.ReadShort();
+        }
+        catch (Exception ex)
+        {
+            System.GC.KeepAlive(0);
+            return;
+        }
+
+        _batchAddingItems = true;
+        try
+        {
+            for (int i = 0; i < itemCount; i++)
+            {
+                int nextPos;
+                try
+                {
+                    nextPos = buffer.ReadUshort() + buffer.Position;
+                }
+                catch (Exception ex)
+                {
+                    System.GC.KeepAlive(0);
+                    return;
+                }
+
+                try
+                {
+                    var resource = buffer.ReadS();
+                    if (string.IsNullOrWhiteSpace(resource))
+                    {
+                        resource = _defaultItem;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(resource))
+                    {
+                        buffer.Position = nextPos;
+                        continue;
+                    }
+
+                    var obj = GetFromPool(resource);
+                    if (obj == null)
+                    {
+                        buffer.Position = nextPos;
+                        continue;
+                    }
+
+                    ApplyListItemSafetyPipeline(obj);
+                    SetupItemClickHandler(obj);
+                    AddChild(obj);
+                    SetupItem(buffer, obj);
+                    addedCount++;
+                }
+                catch (Exception ex)
+                {
+                    System.GC.KeepAlive(0);
+                }
+                finally
+                {
+                    buffer.Position = nextPos;
+                }
+            }
+        }
+        finally
+        {
+            _batchAddingItems = false;
+            if (!_virtual)
+            {
+                EnsureBoundsCorrect();
+            }
+
+            if (EnableListPerfDiagLogs)
+            {
+                var elapsedMs = (Stopwatch.GetTimestamp() - perfStart) * 1000.0 / Stopwatch.Frequency;
+                LogListPerf("ReadItems", itemCount, addedCount, elapsedMs);
+            }
+        }
+    }
+
+    private void EnsureNativeVirtualPanelAttached(ISCEAdapter adapter)
+    {
+        if (_virtualPanel == null || NativeObject == null)
+        {
+            return;
+        }
+
+        if (!_virtualPanelAttached)
+        {
+            adapter.AddChild(NativeObject, _virtualPanel);
+            _virtualPanelAttached = true;
+        }
+
+        adapter.SetSize(_virtualPanel, Width, Height);
+    }
+
+    private void EnsureItemSizeHintsFromChildren()
+    {
+        if (_itemWidth > 0 && _itemHeight > 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < _children.Count; i++)
+        {
+            var child = _children[i];
+            if (!child.Visible)
+            {
+                continue;
+            }
+
+            if (_itemWidth <= 0 && child.Width > 0)
+            {
+                _itemWidth = child.Width;
+            }
+
+            if (_itemHeight <= 0 && child.Height > 0)
+            {
+                _itemHeight = child.Height;
+            }
+
+            if (_itemWidth > 0 && _itemHeight > 0)
+            {
+                break;
+            }
+        }
+    }
+
+    private void LogPoolDiag(string action, string key, int poolCount, string reason)
+    {
+        if (!EnablePoolDiagLogs || _poolDiagLogCount >= PoolDiagLogLimit)
+        {
+            return;
+        }
+
+        _poolDiagLogCount++;
+        System.GC.KeepAlive(0);
+    }
+
+    private void LogListPerf(string stage, int requestedItems, int addedItems, double elapsedMs)
+    {
+        if (_listPerfLogCount >= ListPerfLogLimit)
+        {
+            return;
+        }
+
+        var shouldLog = _listPerfLogCount < 10 || elapsedMs >= 8.0;
+        if (!shouldLog)
+        {
+            return;
+        }
+
+        _listPerfLogCount++;
+        System.GC.KeepAlive(0);
+    }
+
+    protected virtual void SetupItem(ByteBuffer buffer, GObject obj)
+    {
+        var text = buffer.ReadS();
+        if (text != null)
+        {
+            obj.Text = text;
+        }
+
+        var selectedTitle = buffer.ReadS();
+        if (selectedTitle != null && obj is GButton buttonForTitle)
+        {
+            buttonForTitle.SelectedTitle = selectedTitle;
+        }
+
+        var icon = buffer.ReadS();
+        if (icon != null)
+        {
+            obj.Icon = icon;
+        }
+
+        var selectedIcon = buffer.ReadS();
+        if (selectedIcon != null && obj is GButton buttonForIcon)
+        {
+            buttonForIcon.SelectedIcon = selectedIcon;
+        }
+
+        var name = buffer.ReadS();
+        if (name != null)
+        {
+            obj.Name = name;
+        }
+
+        if (obj is not GComponent comp)
+        {
+            return;
+        }
+
+        var controllerStateCount = buffer.ReadShort();
+        for (int i = 0; i < controllerStateCount; i++)
+        {
+            var controllerName = buffer.ReadS();
+            var pageId = buffer.ReadS();
+            if (controllerName == null || pageId == null)
+            {
+                continue;
+            }
+
+            var controller = comp.GetController(controllerName);
+            if (controller != null)
+            {
+                controller.SelectedPageId = pageId;
+            }
+        }
+
+        if (buffer.Version < 2)
+        {
+            return;
+        }
+
+        var propertyCount = buffer.ReadShort();
+        for (int i = 0; i < propertyCount; i++)
+        {
+            var targetPath = buffer.ReadS();
+            var propertyId = buffer.ReadShort();
+            var value = buffer.ReadS();
+            if (targetPath == null || value == null)
+            {
+                continue;
+            }
+
+            var target = comp.GetChildByPath(targetPath);
+            if (target == null)
+            {
+                continue;
+            }
+
+            if (propertyId == 0)
+            {
+                target.Text = value;
+            }
+            else if (propertyId == 1)
+            {
+                target.Icon = value;
+            }
+        }
     }
     
     public override void Dispose()
@@ -1369,12 +1823,28 @@ public class FGUIList : FGUIComponent
         try
         {
             // Snapshot first: item.Dispose may indirectly mutate list internals.
-            var virtualItems = new List<FGUIObject>(_virtualItems.Values);
+            var virtualItems = new List<GObject>(_virtualItems.Values);
             _virtualItems.Clear();
             for (var i = virtualItems.Count - 1; i >= 0; i--)
             {
                 virtualItems[i].Dispose();
             }
+
+            foreach (var stack in _itemPool.Values)
+            {
+                while (stack.Count > 0)
+                {
+                    var pooled = stack.Pop();
+                    if (!pooled.Disposed)
+                    {
+                        pooled.Dispose();
+                    }
+                }
+            }
+
+            _itemPool.Clear();
+            _itemPoolKeyByObject.Clear();
+            _boundItemClickHandlers.Clear();
 
             // Clean up virtual panel
             var adapter = SCERenderContext.Instance.Adapter;
@@ -1383,13 +1853,83 @@ public class FGUIList : FGUIComponent
                 adapter.Dispose(_virtualPanel);
                 _virtualPanel = null;
             }
+            _virtualPanelAttached = false;
 
             _nativeVirtualSlotChildren.Clear();
+            UnbindVirtualScrollListener();
             base.Dispose();
         }
         finally
         {
             _isDisposing = false;
+        }
+    }
+
+    private void BindVirtualScrollListener()
+    {
+        if (_virtualScrollListenerBound)
+        {
+            return;
+        }
+
+        AddEventListener("onScroll", HandleVirtualScrollEvent);
+        AddEventListener("onScrollEnd", HandleVirtualScrollEvent);
+        _virtualScrollListenerBound = true;
+    }
+
+    private void UnbindVirtualScrollListener()
+    {
+        if (!_virtualScrollListenerBound)
+        {
+            return;
+        }
+
+        RemoveEventListener("onScroll", HandleVirtualScrollEvent);
+        RemoveEventListener("onScrollEnd", HandleVirtualScrollEvent);
+        _virtualScrollListenerBound = false;
+    }
+
+    private void HandleVirtualScrollEvent(EventContext _)
+    {
+        if (!_virtual || _numItems <= 0 || ScrollPane == null)
+        {
+            return;
+        }
+
+        // Native virtual path is driven by VirtualizingPanel callbacks.
+        // Manual fallback path renders all items at data-refresh time.
+        // Neither mode should re-run per-scroll reposition here.
+        return;
+    }
+
+    private void RenderManualFallbackAllItems()
+    {
+        if (!_virtual)
+        {
+            return;
+        }
+
+        var targetCount = Math.Max(0, _numItems);
+        while (_children.Count < targetCount)
+        {
+            var item = AddItemFromPool();
+            if (item == null)
+            {
+                break;
+            }
+        }
+
+        while (_children.Count > targetCount)
+        {
+            ReturnToPool(RemoveChildAt(_children.Count - 1));
+        }
+
+        for (int i = 0; i < _children.Count; i++)
+        {
+            var child = _children[i];
+            CalculateItemPosition(i, out float x, out float y);
+            child.SetXY(x, y);
+            ItemRenderer?.Invoke(i, child);
         }
     }
 
@@ -1466,12 +2006,12 @@ public class FGUIList : FGUIComponent
                     }
                     else
                     {
-                        FGUIObject current = _children[index];
+                        GObject current = _children[index];
                         int k = 0;
                         int i;
                         for (i = index - 1; i >= 0; i--)
                         {
-                            FGUIObject obj = _children[i];
+                            GObject obj = _children[i];
                             if (obj.Y != current.Y)
                             {
                                 current = obj;
@@ -1481,7 +2021,7 @@ public class FGUIList : FGUIComponent
                         }
                         for (; i >= 0; i--)
                         {
-                            FGUIObject obj = _children[i];
+                            GObject obj = _children[i];
                             if (obj.Y != current.Y)
                             {
                                 index = i + k + 1;
@@ -1505,13 +2045,13 @@ public class FGUIList : FGUIComponent
                     }
                     else
                     {
-                        FGUIObject current = _children[index];
+                        GObject current = _children[index];
                         int k = 0;
                         int cnt = _children.Count;
                         int i;
                         for (i = index + 1; i < cnt; i++)
                         {
-                            FGUIObject obj = _children[i];
+                            GObject obj = _children[i];
                             if (obj.X != current.X)
                             {
                                 current = obj;
@@ -1521,7 +2061,7 @@ public class FGUIList : FGUIComponent
                         }
                         for (; i < cnt; i++)
                         {
-                            FGUIObject obj = _children[i];
+                            GObject obj = _children[i];
                             if (obj.X != current.X)
                             {
                                 index = i - k - 1;
@@ -1545,13 +2085,13 @@ public class FGUIList : FGUIComponent
                     }
                     else
                     {
-                        FGUIObject current = _children[index];
+                        GObject current = _children[index];
                         int k = 0;
                         int cnt = _children.Count;
                         int i;
                         for (i = index + 1; i < cnt; i++)
                         {
-                            FGUIObject obj = _children[i];
+                            GObject obj = _children[i];
                             if (obj.Y != current.Y)
                             {
                                 current = obj;
@@ -1561,7 +2101,7 @@ public class FGUIList : FGUIComponent
                         }
                         for (; i < cnt; i++)
                         {
-                            FGUIObject obj = _children[i];
+                            GObject obj = _children[i];
                             if (obj.Y != current.Y)
                             {
                                 index = i - k - 1;
@@ -1585,12 +2125,12 @@ public class FGUIList : FGUIComponent
                     }
                     else
                     {
-                        FGUIObject current = _children[index];
+                        GObject current = _children[index];
                         int k = 0;
                         int i;
                         for (i = index - 1; i >= 0; i--)
                         {
-                            FGUIObject obj = _children[i];
+                            GObject obj = _children[i];
                             if (obj.X != current.X)
                             {
                                 current = obj;
@@ -1600,7 +2140,7 @@ public class FGUIList : FGUIComponent
                         }
                         for (; i >= 0; i--)
                         {
-                            FGUIObject obj = _children[i];
+                            GObject obj = _children[i];
                             if (obj.X != current.X)
                             {
                                 index = i + k + 1;
@@ -1623,3 +2163,4 @@ public class FGUIList : FGUIComponent
     }
 }
 #endif
+

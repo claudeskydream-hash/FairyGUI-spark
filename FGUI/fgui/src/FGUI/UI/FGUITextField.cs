@@ -2,12 +2,12 @@
 using System.Drawing;
 using System.Linq;
 using System.Text;
-using SCEFGUI.Core;
-using SCEFGUI.Utils;
+using FairyGUI;
+using FairyGUI.Utils;
 
-namespace SCEFGUI.UI;
+namespace FairyGUI;
 
-public class FGUITextField : FGUIObject
+public class GTextField : GObject
 {
     // 静态标志：记录哪些警告已经显示过（避免重复警告）
     private static bool _warnedStroke = false;
@@ -59,7 +59,7 @@ public class FGUITextField : FGUIObject
     public bool Bold { get => _bold; set { _bold = value; UpdateDisplay(); } }
     public bool Italic { get => _italic; set { _italic = value; UpdateDisplay(); } }
 
-    public FGUITextField SetVar(string name, string value)
+    public GTextField SetVar(string name, string value)
     {
         if (_templateVars == null)
             _templateVars = new Dictionary<string, string>();
@@ -238,6 +238,13 @@ public class FGUITextField : FGUIObject
         // 设置字体大小
         adapter.SetFontSize(NativeObject, _fontSize);
 
+        // 设置字体 family（FGUI 存的是字体名/资源引用，映射成引擎 family 后套用）
+        var fontFamily = FGUIFontMap.Resolve(_font);
+        if (fontFamily != null)
+        {
+            adapter.SetFontName(NativeObject, fontFamily);
+        }
+
         // 设置粗体和斜体
         adapter.SetBold(NativeObject, _bold);
         adapter.SetItalic(NativeObject, _italic);
@@ -280,7 +287,13 @@ public class FGUITextField : FGUIObject
         }
         if ((_leading != 0 || _letterSpacing != 0) && !_warnedLeading)
         {
-            Game.Logger.LogWarning("[FGUI] TextField leading/letterSpacing not supported in SCE (this warning will only show once)");
+            var preview = displayText.Length > 32 ? $"{displayText[..32]}..." : displayText;
+            Game.Logger.LogWarning(
+                "[FGUI] TextField leading/letterSpacing not supported in SCE (this warning will only show once). name={Name}, leading={Leading}, letterSpacing={LetterSpacing}, text='{Preview}'",
+                Name,
+                _leading,
+                _letterSpacing,
+                preview);
             _warnedLeading = true;
         }
 
@@ -293,24 +306,24 @@ public class FGUITextField : FGUIObject
     }
 }
 
-public class FGUIRichTextField : FGUITextField 
+public class GRichTextField : GTextField 
 {
-    public Event.EventListener OnClickLink => GetOrCreateListener("onClickLink");
+    public EventListener OnClickLink => GetOrCreateListener("onClickLink");
     
-    private Event.EventListener GetOrCreateListener(string type)
+    private EventListener GetOrCreateListener(string type)
     {
         if (!_listeners.TryGetValue(type, out var listener))
         {
-            listener = new Event.EventListener();
+            listener = new EventListener();
             _listeners[type] = listener;
         }
         return listener;
     }
     
-    private readonly Dictionary<string, Event.EventListener> _listeners = new();
+    private readonly Dictionary<string, EventListener> _listeners = new();
 }
 
-public class FGUITextInput : FGUITextField
+public class GTextInput : GTextField
 {
     private string _promptText = "";
     private bool _password;
@@ -318,24 +331,33 @@ public class FGUITextInput : FGUITextField
     private string _restrict = "";
     private bool _editable = true;
     
-    private Event.EventListener? _onChanged;
-    private Event.EventListener? _onSubmit;
+    private EventListener? _onChanged;
+    private EventListener? _onSubmit;
 
     public string PromptText { get => _promptText; set { _promptText = value; UpdateInputDisplay(); } }
     public bool Password { get => _password; set { _password = value; UpdateInputDisplay(); } }
     public int MaxLength { get => _maxLength; set { _maxLength = value; UpdateInputDisplay(); } }
     public string Restrict { get => _restrict; set => _restrict = value; }
     public bool Editable { get => _editable; set { _editable = value; UpdateInputDisplay(); } }
+    public override string? Text
+    {
+        get
+        {
+            SyncTextFromNativeInput();
+            return base.Text;
+        }
+        set => base.Text = value;
+    }
     
     /// <summary>
     /// 文本变化事件
     /// </summary>
-    public Event.EventListener OnChanged => _onChanged ??= new Event.EventListener();
+    public EventListener OnChanged => _onChanged ??= new EventListener();
     
     /// <summary>
     /// 提交事件（按下回车）
     /// </summary>
-    public Event.EventListener OnSubmit => _onSubmit ??= new Event.EventListener();
+    public EventListener OnSubmit => _onSubmit ??= new EventListener();
 
     public override void Setup_BeforeAdd(ByteBuffer buffer, int beginPos)
     {
@@ -355,7 +377,26 @@ public class FGUITextInput : FGUITextField
         // 输入框使用Input控件
         if (NativeObject == null)
         {
-            NativeObject = Render.SCERenderContext.Instance.Adapter?.CreateInput();
+            var adapter = Render.SCERenderContext.Instance.Adapter;
+            NativeObject = adapter?.CreateInput();
+            if (NativeObject != null)
+            {
+                adapter?.OnInputTextChanged(NativeObject, text =>
+                {
+                    if (_text == text)
+                    {
+                        return;
+                    }
+
+                    _text = text;
+                    _onChanged?.Call(new EventContext
+                    {
+                        Sender = this,
+                        Type = "onChanged",
+                        Data = text
+                    });
+                });
+            }
             UpdateDisplay();
             UpdateInputDisplay();
         }
@@ -389,5 +430,34 @@ public class FGUITextInput : FGUITextField
         // 设置是否可编辑
         adapter.SetInputEditable(NativeObject, _editable);
     }
+
+    private void SyncTextFromNativeInput()
+    {
+        if (NativeObject == null)
+        {
+            return;
+        }
+
+        // Host input callbacks can be one step behind in some UI paths.
+        // Pull native text directly so immediate click handlers read the latest value.
+        var nativeText = TryGetNativeText(NativeObject);
+        if (nativeText != null && _text != nativeText)
+        {
+            _text = nativeText;
+        }
+    }
+
+    private static string? TryGetNativeText(object nativeObject)
+    {
+        var textProperty = nativeObject.GetType().GetProperty("Text");
+        if (textProperty?.CanRead != true)
+        {
+            return null;
+        }
+
+        return textProperty.GetValue(nativeObject)?.ToString();
+    }
 }
 #endif
+
+

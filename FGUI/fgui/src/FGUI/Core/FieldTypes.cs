@@ -1,5 +1,5 @@
 #if CLIENT
-namespace SCEFGUI.Core;
+namespace FairyGUI;
 
 public enum PackageItemType
 {
@@ -324,3 +324,4 @@ public enum ObjectSortingOrder
     Arch
 }
 #endif
+

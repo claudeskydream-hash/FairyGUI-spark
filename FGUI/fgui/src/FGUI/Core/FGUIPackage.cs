@@ -1,16 +1,17 @@
 #if CLIENT
 using System.Drawing;
-using SCEFGUI.Utils;
+using FairyGUI.Utils;
 
-namespace SCEFGUI.Core;
+namespace FairyGUI;
 
-public class FGUIPackage
+public class UIPackage
 {
     public const string URL_PREFIX = "ui://";
     public const uint FGUI_MAGIC = 0x46475549;
 
     public string? Id { get; private set; }
     public string? Name { get; private set; }
+    public string? AssetPath => _assetPath;
     public int BranchIndex { get; internal set; } = -1;
 
     private readonly List<PackageItem> _items = new();
@@ -20,9 +21,9 @@ public class FGUIPackage
     private Dictionary<string, string>[]? _dependencies;
     private string?[]? _branches;
 
-    private static readonly Dictionary<string, FGUIPackage> _packageInstById = new();
-    private static readonly Dictionary<string, FGUIPackage> _packageInstByName = new();
-    private static readonly List<FGUIPackage> _packageList = new();
+    private static readonly Dictionary<string, UIPackage> _packageInstById = new();
+    private static readonly Dictionary<string, UIPackage> _packageInstByName = new();
+    private static readonly List<UIPackage> _packageList = new();
     private static string? _branch;
 
     public delegate byte[]? LoadResourceFunc(string name, string extension);
@@ -45,16 +46,19 @@ public class FGUIPackage
         }
     }
 
-    public static FGUIPackage? GetById(string id) =>
+    public static UIPackage? GetById(string id) =>
         _packageInstById.TryGetValue(id, out var pkg) ? pkg : null;
 
-    public static FGUIPackage? GetByName(string name) =>
+    public static UIPackage? GetByName(string name) =>
         _packageInstByName.TryGetValue(name, out var pkg) ? pkg : null;
 
-    public static FGUIPackage? AddPackage(byte[] descData, string assetNamePrefix, LoadResourceFunc loadFunc)
+    public static GObject? CreateObject(string packageName, string componentName) =>
+        GetByName(packageName)?.CreateObject(componentName);
+
+    public static UIPackage? AddPackage(byte[] descData, string assetNamePrefix, LoadResourceFunc loadFunc)
     {
         ByteBuffer buffer = new ByteBuffer(descData);
-        FGUIPackage pkg = new FGUIPackage { _loadFunc = loadFunc, _assetPath = assetNamePrefix };
+        UIPackage pkg = new UIPackage { _loadFunc = loadFunc, _assetPath = assetNamePrefix };
         if (!pkg.LoadPackage(buffer, assetNamePrefix)) return null;
         if (pkg.Id != null) _packageInstById[pkg.Id] = pkg;
         if (pkg.Name != null) _packageInstByName[pkg.Name] = pkg;
@@ -62,7 +66,7 @@ public class FGUIPackage
         return pkg;
     }
 
-    public static FGUIPackage? AddPackage(string filePath, LoadResourceFunc loadFunc)
+    public static UIPackage? AddPackage(string filePath, LoadResourceFunc loadFunc)
     {
         string assetPath = Path.GetDirectoryName(filePath) ?? "";
         string fileName = Path.GetFileNameWithoutExtension(filePath);
@@ -78,7 +82,7 @@ public class FGUIPackage
 
     public static void RemovePackage(string packageIdOrName)
     {
-        FGUIPackage? pkg = null;
+        UIPackage? pkg = null;
         if (!_packageInstById.TryGetValue(packageIdOrName, out pkg))
             if (!_packageInstByName.TryGetValue(packageIdOrName, out pkg))
                 throw new Exception($"FGUI: '{packageIdOrName}' is not a valid package id or name.");
@@ -94,7 +98,7 @@ public class FGUIPackage
         _packageInstByName.Clear();
     }
 
-    public static List<FGUIPackage> GetPackages() => _packageList;
+    public static List<UIPackage> GetPackages() => _packageList;
 
     public static string? GetItemURL(string pkgName, string resName)
     {
@@ -154,7 +158,7 @@ public class FGUIPackage
         if (Id != null && _packageInstById.TryGetValue(Id, out var existingPkg))
         {
             if (Name != existingPkg.Name)
-                Game.Logger.LogWarning("[FGUI] Package conflicts, '{Name}' and '{ExistingName}'", Name, existingPkg.Name);
+                Game.Logger.LogWarning("FGUI: Package conflicts, '{Name}' and '{ExistingName}'", Name, existingPkg.Name);
             return false;
         }
 
@@ -333,6 +337,61 @@ public class FGUIPackage
 
     public List<PackageItem> GetItems() => _items;
 
+    public bool TryGetDesignResolution(out float width, out float height, string? preferredComponentName = null)
+    {
+        width = 0f;
+        height = 0f;
+
+        PackageItem? candidate = null;
+        _ = preferredComponentName;
+
+        if (candidate == null)
+        {
+            foreach (var item in _items)
+            {
+                if (item.Type != PackageItemType.Component || string.IsNullOrWhiteSpace(item.Name))
+                {
+                    continue;
+                }
+
+                if (item.Name.Equals("Main", StringComparison.OrdinalIgnoreCase) ||
+                    item.Name.EndsWith("/Main", StringComparison.OrdinalIgnoreCase))
+                {
+                    candidate = item;
+                    break;
+                }
+            }
+        }
+
+        if (candidate == null)
+        {
+            var maxArea = -1;
+            foreach (var item in _items)
+            {
+                if (item.Type != PackageItemType.Component || item.Width <= 0 || item.Height <= 0)
+                {
+                    continue;
+                }
+
+                var area = item.Width * item.Height;
+                if (area > maxArea)
+                {
+                    maxArea = area;
+                    candidate = item;
+                }
+            }
+        }
+
+        if (candidate == null || candidate.Width <= 0 || candidate.Height <= 0)
+        {
+            return false;
+        }
+
+        width = candidate.Width;
+        height = candidate.Height;
+        return true;
+    }
+
     public AtlasSprite? GetSprite(string itemId) =>
         _sprites.TryGetValue(itemId, out var sprite) ? sprite : null;
 
@@ -343,6 +402,9 @@ public class FGUIPackage
             case PackageItemType.Image:
                 if (item.Sprite == null) LoadImage(item);
                 return item.Sprite;
+            case PackageItemType.MovieClip:
+                if (item.MovieClipFrames == null) LoadMovieClip(item);
+                return item.MovieClipFrames;
             case PackageItemType.Atlas:
                 if (item.TextureData == null) LoadAtlas(item);
                 return item.TextureData;
@@ -372,20 +434,66 @@ public class FGUIPackage
         }
     }
 
-    public FGUIObject? CreateObject(string resName)
+    private void LoadMovieClip(PackageItem item)
+    {
+        if (item.RawData == null)
+        {
+            item.MovieClipFrames = [];
+            return;
+        }
+
+        var buffer = item.RawData;
+        buffer.Seek(0, 0);
+        item.Interval = buffer.ReadInt() / 1000f;
+        item.Swing = buffer.ReadBool();
+        item.RepeatDelay = buffer.ReadInt() / 1000f;
+
+        if (!buffer.Seek(0, 1))
+        {
+            item.MovieClipFrames = [];
+            return;
+        }
+
+        var frameCount = (int)buffer.ReadShort();
+        var frames = new List<MovieClipFrameData>(Math.Max(frameCount, 0));
+
+        for (var i = 0; i < frameCount; i++)
+        {
+            var nextPos = (int)buffer.ReadUshort();
+            nextPos += buffer.Position;
+
+            var frame = new MovieClipFrameData
+            {
+                Rect = new RectangleF(
+                    buffer.ReadInt(),
+                    buffer.ReadInt(),
+                    buffer.ReadInt(),
+                    buffer.ReadInt()),
+                AddDelay = buffer.ReadInt() / 1000f,
+                SpriteId = buffer.ReadS(),
+            };
+            frames.Add(frame);
+
+            buffer.Position = nextPos;
+        }
+
+        item.MovieClipFrames = frames;
+    }
+
+    public GObject? CreateObject(string resName)
     {
         if (!_itemsByName.TryGetValue(resName, out var pi))
         {
-            Game.Logger.LogWarning("[FGUI] Resource not found: {ResName} in {PackageName}", resName, Name);
+            Game.Logger.LogWarning("FGUI: resource not found - {ResName} in {Name}", resName, Name);
             return null;
         }
         return CreateObject(pi);
     }
 
-    public FGUIObject? CreateObject(PackageItem item)
+    public GObject? CreateObject(PackageItem item)
     {
         GetItemAsset(item);
-        FGUIObject? obj = FGUIObjectFactory.NewObject(item);
+        GObject? obj = UIObjectFactory.NewObject(item);
         if (obj == null) return null;
         obj.PackageItem = item;
         obj.ResourceUrl = URL_PREFIX + Id + item.Id;
@@ -393,7 +501,7 @@ public class FGUIPackage
         return obj;
     }
     
-    public static FGUIObject? CreateObjectFromURL(string url)
+    public static GObject? CreateObjectFromURL(string url)
     {
         var pi = GetItemByURL(url);
         if (pi?.Owner == null) return null;
@@ -408,3 +516,4 @@ public class FGUIPackage
     }
 }
 #endif
+

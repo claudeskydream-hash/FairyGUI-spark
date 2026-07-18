@@ -1,8 +1,8 @@
 #if CLIENT
 using System.Drawing;
-using SCEFGUI.Utils;
+using FairyGUI.Utils;
 
-namespace SCEFGUI.Core;
+namespace FairyGUI;
 
 public class AtlasSprite
 {
@@ -13,9 +13,16 @@ public class AtlasSprite
     public bool Rotated { get; set; }
 }
 
+public class MovieClipFrameData
+{
+    public RectangleF Rect { get; set; }
+    public float AddDelay { get; set; }
+    public string? SpriteId { get; set; }
+}
+
 public class PackageItem
 {
-    public FGUIPackage? Owner { get; set; }
+    public UIPackage? Owner { get; set; }
     public PackageItemType Type { get; set; }
     public ObjectType ObjectType { get; set; }
     public string? Id { get; set; }
@@ -33,6 +40,7 @@ public class PackageItem
     public float Interval { get; set; }
     public float RepeatDelay { get; set; }
     public bool Swing { get; set; }
+    public List<MovieClipFrameData>? MovieClipFrames { get; set; }
     public byte[]? TextureData { get; set; }
     public AtlasSprite? Sprite { get; set; }
 
@@ -53,3 +61,4 @@ public class PackageItem
     }
 }
 #endif
+

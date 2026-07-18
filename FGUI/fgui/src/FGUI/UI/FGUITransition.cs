@@ -1,17 +1,16 @@
 #if CLIENT
 using System.Drawing;
-using SCEFGUI.Core;
-using SCEFGUI.Tween;
-using SCEFGUI.Utils;
+using FairyGUI;
+using FairyGUI.Utils;
 
-namespace SCEFGUI.UI;
+namespace FairyGUI;
 
 public delegate void PlayCompleteCallback();
 
-public class FGUITransition
+public class Transition
 {
     public string Name { get; set; } = "";
-    public FGUIComponent? Owner { get; set; }
+    public GComponent? Owner { get; set; }
 
     private List<TransitionItem> _items = new();
     private int _totalTimes;
@@ -29,10 +28,19 @@ public class FGUITransition
     private float _timeScale = 1;
     private float _startTime;
     private float _endTime = -1;
+    private int _decodeDiagLogCount;
+    private int _relationDiagLogCount;
+    private const int DecodeDiagLogLimit = 24;
+    private const int RelationDiagLogLimit = 64;
 
     public bool Playing => _playing;
     public bool Paused { get => _paused; set => _paused = value; }
     public float TimeScale { get => _timeScale; set => _timeScale = value; }
+
+    public void ChangePlayTimes(int value)
+    {
+        _totalTimes = value;
+    }
 
     public void Play(PlayCompleteCallback? onComplete = null, int times = 1, float delay = 0)
     {
@@ -212,7 +220,7 @@ public class FGUITransition
                 }
                 break;
             case TransitionActionType.Animation:
-                if (target is FGUIMovieClip mc)
+                if (target is GMovieClip mc)
                 {
                     mc.Frame = (int)item.StartValue.X;
                     mc.Playing = item.StartValue.B1;
@@ -274,6 +282,54 @@ public class FGUITransition
 
         if (processCallback)
             _onComplete?.Invoke();
+    }
+
+    internal void UpdateFromRelations(GObject target, float dx, float dy)
+    {
+        if (_items.Count == 0 || target == null)
+        {
+            return;
+        }
+
+        for (var i = 0; i < _items.Count; i++)
+        {
+            var item = _items[i];
+            if (item.Type != TransitionActionType.XY || !ReferenceEquals(item.Target, target))
+            {
+                continue;
+            }
+
+            if (item.TweenConfig != null)
+            {
+                var appliedStart = false;
+                var appliedEnd = false;
+                if (!item.StartValue.B3)
+                {
+                    item.StartValue.X += dx;
+                    item.StartValue.Y += dy;
+                    appliedStart = true;
+                }
+
+                if (!item.EndValue.B3)
+                {
+                    item.EndValue.X += dx;
+                    item.EndValue.Y += dy;
+                    appliedEnd = true;
+                }
+
+                EmitRelationDiag(target, dx, dy, appliedStart, appliedEnd);
+            }
+            else if (!item.StartValue.B3)
+            {
+                item.StartValue.X += dx;
+                item.StartValue.Y += dy;
+                EmitRelationDiag(target, dx, dy, true, false);
+            }
+            else
+            {
+                EmitRelationDiag(target, dx, dy, false, false);
+            }
+        }
     }
 
     public void SetValue(string label, params object[] aParams)
@@ -357,125 +413,71 @@ public class FGUITransition
     public void Setup(ByteBuffer buffer)
     {
         Name = buffer.ReadS() ?? "";
-        int options = buffer.ReadInt();
-        _autoPlay = (options & 1) != 0;
+        _ = buffer.ReadInt();
+        _autoPlay = buffer.ReadBool();
         _autoPlayTimes = buffer.ReadInt();
         _autoPlayDelay = buffer.ReadFloat();
 
         int cnt = buffer.ReadShort();
+        _items.Clear();
         for (int i = 0; i < cnt; i++)
         {
             int dataLen = buffer.ReadShort();
-            int startPos = buffer.Position;
-
+            int curPos = buffer.Position;
             var item = new TransitionItem();
-            item.Time = buffer.ReadFloat();
-            int targetId = buffer.ReadShort();
-            if (targetId < 0)
-                item.Target = Owner;
-            else
-                item.Target = Owner?.GetChildAt(targetId);
-
-            item.Type = (TransitionActionType)buffer.ReadByte();
             item.TweenConfig = null;
 
-            if (buffer.ReadBool())
+            if (buffer.Seek(curPos, 0))
             {
-                item.TweenConfig = new TweenConfig
+                item.Type = (TransitionActionType)buffer.ReadByte();
+                item.Time = buffer.ReadFloat();
+                int targetId = buffer.ReadShort();
+                if (targetId < 0)
                 {
-                    Duration = buffer.ReadFloat(),
-                    EaseType = (EaseType)buffer.ReadByte()
-                };
-                int repeat = buffer.ReadInt();
-                if (repeat == 1) item.TweenConfig.Repeat = true;
-                else if (repeat == 2) item.TweenConfig.Yoyo = true;
-                item.TweenConfig.Repeat = repeat != 0;
+                    item.Target = Owner;
+                }
+                else
+                {
+                    item.Target = Owner?.GetChildAt(targetId);
+                }
+
                 item.Label = buffer.ReadS();
-            }
-
-            item.Label2 = buffer.ReadS();
-
-            switch (item.Type)
-            {
-                case TransitionActionType.XY:
-                case TransitionActionType.Size:
-                case TransitionActionType.Scale:
-                case TransitionActionType.Pivot:
-                case TransitionActionType.Skew:
-                    item.StartValue.B1 = buffer.ReadBool();
-                    item.StartValue.B2 = buffer.ReadBool();
-                    item.StartValue.X = buffer.ReadFloat();
-                    item.StartValue.Y = buffer.ReadFloat();
-                    if (item.TweenConfig != null)
+                var hasTween = buffer.ReadBool();
+                if (hasTween)
+                {
+                    if (buffer.Seek(curPos, 1))
                     {
-                        item.EndValue.B1 = buffer.ReadBool();
-                        item.EndValue.B2 = buffer.ReadBool();
-                        item.EndValue.X = buffer.ReadFloat();
-                        item.EndValue.Y = buffer.ReadFloat();
+                        item.TweenConfig = new TweenConfig
+                        {
+                            Duration = buffer.ReadFloat(),
+                            EaseType = (EaseType)buffer.ReadByte()
+                        };
+                        int repeat = buffer.ReadInt();
+                        item.TweenConfig.Repeat = repeat != 0;
+                        item.TweenConfig.Yoyo = buffer.ReadBool();
+                        item.Label2 = buffer.ReadS();
                     }
-                    if (buffer.Version >= 2 && item.Type == TransitionActionType.XY && buffer.ReadBool())
+
+                    if (buffer.Seek(curPos, 2))
                     {
-                        // Path data - skip for now
-                        int pathLen = buffer.ReadShort();
-                        buffer.Skip(pathLen * 14); // Approximate path point size
+                        DecodeTransitionValue(item.Type, buffer, item.StartValue);
                     }
-                    break;
 
-                case TransitionActionType.Alpha:
-                case TransitionActionType.Rotation:
-                    item.StartValue.X = buffer.ReadFloat();
-                    if (item.TweenConfig != null)
-                        item.EndValue.X = buffer.ReadFloat();
-                    break;
+                    if (buffer.Seek(curPos, 3))
+                    {
+                        DecodeTransitionValue(item.Type, buffer, item.EndValue);
+                    }
+                }
+                else if (buffer.Seek(curPos, 2))
+                {
+                    DecodeTransitionValue(item.Type, buffer, item.StartValue);
+                }
 
-                case TransitionActionType.Color:
-                    item.StartValue.C = buffer.ReadColor();
-                    if (item.TweenConfig != null)
-                        item.EndValue.C = buffer.ReadColor();
-                    break;
-
-                case TransitionActionType.Animation:
-                    item.StartValue.X = buffer.ReadInt(); // frame
-                    item.StartValue.B1 = buffer.ReadBool(); // playing
-                    break;
-
-                case TransitionActionType.Visible:
-                    item.StartValue.B1 = buffer.ReadBool();
-                    break;
-
-                case TransitionActionType.Sound:
-                    buffer.ReadS(); // sound
-                    buffer.ReadFloat(); // volume
-                    break;
-
-                case TransitionActionType.Transition:
-                    buffer.ReadS(); // transName
-                    buffer.ReadInt(); // playTimes
-                    break;
-
-                case TransitionActionType.Shake:
-                    item.StartValue.X = buffer.ReadFloat(); // amplitude
-                    item.StartValue.Y = buffer.ReadFloat(); // duration
-                    break;
-
-                case TransitionActionType.ColorFilter:
-                    for (int j = 0; j < 4; j++)
-                        buffer.ReadFloat();
-                    if (item.TweenConfig != null)
-                        for (int j = 0; j < 4; j++)
-                            buffer.ReadFloat();
-                    break;
-
-                case TransitionActionType.Text:
-                case TransitionActionType.Icon:
-                    item.StartValue.S = buffer.ReadS();
-                    if (item.TweenConfig != null)
-                        item.EndValue.S = buffer.ReadS();
-                    break;
+                EmitDecodeDiag(item, buffer.Version);
             }
 
             _items.Add(item);
-            buffer.Position = startPos + dataLen;
+            buffer.Position = curPos + dataLen;
         }
 
         // Calculate total duration
@@ -494,6 +496,110 @@ public class FGUITransition
     {
         Stop(false, false);
         _items.Clear();
+    }
+
+    private static void DecodeTransitionValue(TransitionActionType type, ByteBuffer buffer, TransitionValue value)
+    {
+        switch (type)
+        {
+            case TransitionActionType.XY:
+            case TransitionActionType.Size:
+            case TransitionActionType.Scale:
+            case TransitionActionType.Pivot:
+            case TransitionActionType.Skew:
+                value.B1 = buffer.ReadBool();
+                value.B2 = buffer.ReadBool();
+                value.X = buffer.ReadFloat();
+                value.Y = buffer.ReadFloat();
+                if (buffer.Version >= 2 && type == TransitionActionType.XY)
+                {
+                    value.B3 = buffer.ReadBool();
+                }
+                break;
+
+            case TransitionActionType.Alpha:
+            case TransitionActionType.Rotation:
+                value.X = buffer.ReadFloat();
+                break;
+
+            case TransitionActionType.Color:
+                value.C = buffer.ReadColor();
+                break;
+
+            case TransitionActionType.Animation:
+                value.X = buffer.ReadInt();
+                value.B1 = buffer.ReadBool();
+                break;
+
+            case TransitionActionType.Visible:
+                value.B1 = buffer.ReadBool();
+                break;
+
+            case TransitionActionType.Sound:
+                value.S = buffer.ReadS();
+                value.X = buffer.ReadFloat();
+                break;
+
+            case TransitionActionType.Transition:
+                value.S = buffer.ReadS();
+                value.I = buffer.ReadInt();
+                break;
+
+            case TransitionActionType.Shake:
+                value.X = buffer.ReadFloat();
+                value.Y = buffer.ReadFloat();
+                break;
+
+            case TransitionActionType.ColorFilter:
+                value.X = buffer.ReadFloat();
+                value.Y = buffer.ReadFloat();
+                value.Z = buffer.ReadFloat();
+                value.W = buffer.ReadFloat();
+                break;
+
+            case TransitionActionType.Text:
+            case TransitionActionType.Icon:
+                value.S = buffer.ReadS();
+                break;
+        }
+    }
+
+    private void EmitDecodeDiag(TransitionItem item, int version)
+    {
+        if (_decodeDiagLogCount >= DecodeDiagLogLimit)
+        {
+            return;
+        }
+
+        _decodeDiagLogCount++;
+        Game.Logger.LogInformation(
+            "[FGUI][T11][DECODE] idx={Idx} type={Type} hasTween={HasTween} startB3={StartB3} endB3={EndB3} version={Version} label={Label} endLabel={EndLabel}",
+            _decodeDiagLogCount,
+            item.Type,
+            item.TweenConfig != null,
+            item.StartValue.B3,
+            item.EndValue.B3,
+            version,
+            item.Label ?? string.Empty,
+            item.Label2 ?? string.Empty);
+    }
+
+    private void EmitRelationDiag(GObject target, float dx, float dy, bool appliedStart, bool appliedEnd)
+    {
+        if (_relationDiagLogCount >= RelationDiagLogLimit)
+        {
+            return;
+        }
+
+        _relationDiagLogCount++;
+        Game.Logger.LogInformation(
+            "[FGUI][T11][REL] idx={Idx} target={Target} dx={Dx} dy={Dy} appliedStart={AppliedStart} appliedEnd={AppliedEnd}",
+            _relationDiagLogCount,
+            target.Name,
+            dx,
+            dy,
+            appliedStart,
+            appliedEnd);
     }
 }
 
@@ -518,7 +624,7 @@ class TweenConfig
 class TransitionItem
 {
     public float Time;
-    public FGUIObject? Target;
+    public GObject? Target;
     public TransitionActionType Type;
     public TweenConfig? TweenConfig;
     public string? Label;
@@ -527,3 +633,4 @@ class TransitionItem
     public TransitionValue EndValue = new();
 }
 #endif
+

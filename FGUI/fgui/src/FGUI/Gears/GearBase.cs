@@ -1,28 +1,32 @@
 #if CLIENT
-using SCEFGUI.Core;
-using SCEFGUI.Utils;
+using FairyGUI;
+using FairyGUI.Utils;
 
-namespace SCEFGUI.Gears;
+namespace FairyGUI.Gears;
 
 public abstract class GearBase
 {
     public static bool DisableAllTweenEffect = false;
     
-    protected FGUIObject _owner;
-    protected UI.FGUIController? _controller;
+    protected GObject _owner;
+    protected Controller? _controller;
     protected GearTweenConfig? _tweenConfig;
 
-    public GearBase(FGUIObject owner)
+    public GearBase(GObject owner)
     {
         _owner = owner;
     }
 
     public void Dispose()
     {
-        // Tween cleanup if needed
+        if (_tweenConfig?.Tweener != null)
+        {
+            _tweenConfig.Tweener.Kill();
+            _tweenConfig.Tweener = null;
+        }
     }
 
-    public UI.FGUIController? Controller
+    public Controller? Controller
     {
         get => _controller;
         set { if (value != _controller) { _controller = value; if (_controller != null) Init(); } }
@@ -32,7 +36,7 @@ public abstract class GearBase
 
     public virtual void Setup(ByteBuffer buffer)
     {
-        var parent = _owner.Parent as UI.FGUIComponent;
+        var parent = _owner.Parent as GComponent;
         _controller = parent?.GetControllerAt(buffer.ReadShort());
         Init();
 
@@ -102,5 +106,9 @@ public class GearTweenConfig
     public EaseType EaseType = EaseType.QuadOut;
     public float Duration = 0.3f;
     public float Delay = 0;
+    internal uint DisplayLockToken;
+    internal GTweener? Tweener;
 }
 #endif
+
+

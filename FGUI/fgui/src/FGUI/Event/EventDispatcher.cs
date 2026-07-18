@@ -1,5 +1,5 @@
 #if CLIENT
-namespace SCEFGUI.Event;
+namespace FairyGUI;
 
 public enum KeyCode
 {
@@ -34,11 +34,25 @@ public delegate void EventCallback(EventContext context);
 public class EventListener
 {
     private readonly List<EventCallback> _callbacks = new();
+    private readonly Action? _onFirstCallbackAdded;
+
+    public EventListener(Action? onFirstCallbackAdded = null)
+    {
+        _onFirstCallbackAdded = onFirstCallbackAdded;
+    }
 
     public void Add(EventCallback callback)
     {
+        var wasEmpty = _callbacks.Count == 0;
         if (!_callbacks.Contains(callback))
+        {
             _callbacks.Add(callback);
+        }
+
+        if (wasEmpty && _callbacks.Count > 0)
+        {
+            _onFirstCallbackAdded?.Invoke();
+        }
     }
 
     public void Remove(EventCallback callback) => _callbacks.Remove(callback);
@@ -61,7 +75,7 @@ public class EventDispatcher
     {
         if (!_listeners.TryGetValue(type, out var listener))
         {
-            listener = new EventListener();
+            listener = CreateListener(type);
             _listeners[type] = listener;
         }
         listener.Add(callback);
@@ -119,10 +133,36 @@ public class EventDispatcher
     {
         if (!_listeners.TryGetValue(type, out var listener))
         {
-            listener = new EventListener();
+            listener = CreateListener(type);
             _listeners[type] = listener;
         }
         return listener;
     }
+
+    private EventListener CreateListener(string type)
+    {
+        return new EventListener(() => OnFirstListenerAdded(type));
+    }
+
+    private void OnFirstListenerAdded(string type)
+    {
+        if (!IsNativeTouchBindingEvent(type) || this is not GObject obj)
+        {
+            return;
+        }
+
+        Render.SCERenderContext.Instance.EnsureTouchBinding(obj);
+    }
+
+    private static bool IsNativeTouchBindingEvent(string type)
+    {
+        return type == "onTouchBegin" ||
+               type == "onTouchMove" ||
+               type == "onTouchEnd" ||
+               type == "onClick" ||
+               type == "onRollOver" ||
+               type == "onRollOut";
+    }
 }
 #endif
+

@@ -1,18 +1,18 @@
 #if CLIENT
-using SCEFGUI.UI;
+using FairyGUI;
 
-namespace SCEFGUI.Core;
+namespace FairyGUI;
 
-public static class FGUIObjectFactory
+public static class UIObjectFactory
 {
-    private static readonly Dictionary<string, Func<FGUIComponent>> _extensions = new();
+    private static readonly Dictionary<string, Func<GComponent>> _extensions = new();
     private static readonly Dictionary<string, Type> _packageItemExtensions = new();
     private static Type? _loaderExtension;
 
     /// <summary>
     /// Set extension for a component URL
     /// </summary>
-    public static void SetExtension(string url, Func<FGUIComponent> creator) => _extensions[url] = creator;
+    public static void SetExtension(string url, Func<GComponent> creator) => _extensions[url] = creator;
 
     /// <summary>
     /// Set extension class for a package item URL (like MailItem for virtual list)
@@ -22,7 +22,7 @@ public static class FGUIObjectFactory
     /// <summary>
     /// Set custom loader extension class
     /// </summary>
-    public static void SetLoaderExtension<T>() where T : FGUILoader, new() => _loaderExtension = typeof(T);
+    public static void SetLoaderExtension<T>() where T : GLoader, new() => _loaderExtension = typeof(T);
 
     /// <summary>
     /// Set custom loader extension class by type
@@ -37,73 +37,86 @@ public static class FGUIObjectFactory
     /// <summary>
     /// Try to get extension for a URL
     /// </summary>
-    public static bool TryGetExtension(string url, out Func<FGUIComponent>? creator) => _extensions.TryGetValue(url, out creator);
+    public static bool TryGetExtension(string url, out Func<GComponent>? creator) => _extensions.TryGetValue(url, out creator);
 
     /// <summary>
     /// Try to create object from package item extension
     /// </summary>
-    public static FGUIObject? TryCreateFromExtension(string url)
+    public static GObject? TryCreateFromExtension(string url)
     {
         if (_packageItemExtensions.TryGetValue(url, out var type))
         {
             try
             {
-                return Activator.CreateInstance(type) as FGUIObject;
+                return Activator.CreateInstance(type) as GObject;
             }
             catch { }
         }
         return null;
     }
 
-    public static FGUIObject? NewObject(PackageItem item)
+    public static GObject? NewObject(PackageItem item)
     {
-        // Check if there's a package item extension for this URL
-        string url = $"ui://{item.Owner?.Name}/{item.Name}";
-        var extObj = TryCreateFromExtension(url);
+        // Check extension with the canonical exported URL first: ui://{pkgId}{itemId}
+        GObject? extObj = null;
+        if (!string.IsNullOrWhiteSpace(item.Owner?.Id) && !string.IsNullOrWhiteSpace(item.Id))
+        {
+            var idUrl = UIPackage.URL_PREFIX + item.Owner!.Id + item.Id;
+            extObj = TryCreateFromExtension(idUrl);
+        }
+
+        // Fallback: ui://{packageName}/{itemName}
+        if (extObj == null)
+        {
+            string url = $"ui://{item.Owner?.Name}/{item.Name}";
+            extObj = TryCreateFromExtension(url);
+        }
+
         if (extObj != null)
             return extObj;
 
         return NewObject(item.ObjectType);
     }
 
-    public static FGUIObject? NewObject(ObjectType type)
+    public static GObject? NewObject(ObjectType type)
     {
         return type switch
         {
-            ObjectType.Image => new FGUIImage(),
-            ObjectType.MovieClip => new FGUIMovieClip(),
-            ObjectType.Component => new FGUIComponent(),
-            ObjectType.Text => new FGUITextField(),
-            ObjectType.RichText => new FGUIRichTextField(),
-            ObjectType.InputText => new FGUITextInput(),
-            ObjectType.Group => new FGUIGroup(),
-            ObjectType.List => new FGUIList(),
-            ObjectType.Graph => new FGUIGraph(),
+            ObjectType.Image => new FairyGUI.GImage(),
+            ObjectType.MovieClip => new FairyGUI.GMovieClip(),
+            ObjectType.Component => new FairyGUI.GComponent(),
+            ObjectType.Text => new FairyGUI.GTextField(),
+            ObjectType.RichText => new GRichTextField(),
+            ObjectType.InputText => new GTextInput(),
+            ObjectType.Group => new FairyGUI.GGroup(),
+            ObjectType.List => new FairyGUI.GList(),
+            ObjectType.Graph => new FairyGUI.GGraph(),
             ObjectType.Loader => CreateLoader(),
-            ObjectType.Button => new FGUIButton(),
-            ObjectType.Label => new FGUILabel(),
-            ObjectType.ProgressBar => new FGUIProgressBar(),
-            ObjectType.Slider => new FGUISlider(),
-            ObjectType.ScrollBar => new FGUIScrollBar(),
-            ObjectType.ComboBox => new FGUIComboBox(),
-            ObjectType.Tree => new FGUITree(),
+            ObjectType.Button => new FairyGUI.GButton(),
+            ObjectType.Label => new FairyGUI.GLabel(),
+            ObjectType.ProgressBar => new FairyGUI.GProgressBar(),
+            ObjectType.Slider => new GSlider(),
+            ObjectType.ScrollBar => new GScrollBar(),
+            ObjectType.ComboBox => new FairyGUI.GComboBox(),
+            ObjectType.Tree => new GTree(),
             _ => null
         };
     }
 
-    private static FGUILoader CreateLoader()
+    private static GLoader CreateLoader()
     {
         if (_loaderExtension != null)
         {
             try
             {
-                var loader = Activator.CreateInstance(_loaderExtension) as FGUILoader;
+                var loader = Activator.CreateInstance(_loaderExtension) as GLoader;
                 if (loader != null)
                     return loader;
             }
             catch { }
         }
-        return new FGUILoader();
+        return new GLoader();
     }
 }
 #endif
+

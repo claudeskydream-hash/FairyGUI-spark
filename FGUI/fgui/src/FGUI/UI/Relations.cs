@@ -1,19 +1,19 @@
 #if CLIENT
 using System.Drawing;
-using SCEFGUI.Core;
-using SCEFGUI.Utils;
+using FairyGUI;
+using FairyGUI.Utils;
 
-namespace SCEFGUI.UI;
+namespace FairyGUI;
 
 public class Relations
 {
-    private FGUIObject _owner;
+    private GObject _owner;
     private List<RelationItem> _items = new();
-    public FGUIObject? Handling;
+    public GObject? Handling;
 
-    public Relations(FGUIObject owner) => _owner = owner;
+    public Relations(GObject owner) => _owner = owner;
 
-    public void Add(FGUIObject target, RelationType relationType, bool usePercent = false)
+    public void Add(GObject target, RelationType relationType, bool usePercent = false)
     {
         foreach (var item in _items)
         {
@@ -29,7 +29,7 @@ public class Relations
         _items.Add(newItem);
     }
 
-    public void Remove(FGUIObject target, RelationType relationType)
+    public void Remove(GObject target, RelationType relationType)
     {
         for (int i = _items.Count - 1; i >= 0; i--)
         {
@@ -46,9 +46,9 @@ public class Relations
         }
     }
 
-    public bool Contains(FGUIObject target) => _items.Any(i => i.Target == target);
+    public bool Contains(GObject target) => _items.Any(i => i.Target == target);
 
-    public void ClearFor(FGUIObject target)
+    public void ClearFor(GObject target)
     {
         for (int i = _items.Count - 1; i >= 0; i--)
         {
@@ -98,11 +98,11 @@ public class Relations
         for (int i = 0; i < cnt; i++)
         {
             int targetIndex = buffer.ReadShort();
-            FGUIObject? target;
+            GObject? target;
             if (targetIndex == -1)
                 target = _owner.Parent;
             else if (parentToChild)
-                target = (_owner as FGUIComponent)?.GetChildAt(targetIndex);
+                target = (_owner as GComponent)?.GetChildAt(targetIndex);
             else
                 target = _owner.Parent?.GetChildAt(targetIndex);
 
@@ -139,14 +139,14 @@ class RelationDef
 
 public class RelationItem
 {
-    private FGUIObject _owner;
-    private FGUIObject? _target;
+    private GObject _owner;
+    private GObject? _target;
     private List<RelationDef> _defs = new();
     private (float x, float y, float w, float h) _targetData;
 
-    public RelationItem(FGUIObject owner) => _owner = owner;
+    public RelationItem(GObject owner) => _owner = owner;
 
-    public FGUIObject? Target
+    public GObject? Target
     {
         get => _target;
         set
@@ -255,7 +255,13 @@ public class RelationItem
 
         if (Math.Abs(ox - _owner.X) > 0.001f || Math.Abs(oy - _owner.Y) > 0.001f)
         {
-            _owner.UpdateGear(1);
+            var dx = _owner.X - ox;
+            var dy = _owner.Y - oy;
+            _owner.UpdateGearFromRelations(1, dx, dy);
+            if (_owner.Parent is GComponent parent)
+            {
+                parent.UpdateTransitionsFromRelations(_owner, dx, dy);
+            }
         }
     }
 
@@ -419,7 +425,7 @@ public class RelationItem
         }
     }
 
-    void AddRefTarget(FGUIObject target)
+    void AddRefTarget(GObject target)
     {
         if (target != _owner.Parent)
             target.AddEventListener("onPositionChanged", OnTargetXYChanged);
@@ -427,13 +433,13 @@ public class RelationItem
         _targetData = (target.X, target.Y, target.Width, target.Height);
     }
 
-    void ReleaseRefTarget(FGUIObject target)
+    void ReleaseRefTarget(GObject target)
     {
         target.RemoveEventListener("onPositionChanged", OnTargetXYChanged);
         target.RemoveEventListener("onSizeChanged", OnTargetSizeChanged);
     }
 
-    void OnTargetXYChanged(Event.EventContext context)
+    void OnTargetXYChanged(EventContext context)
     {
         if (_target == null) return;
         if (_owner.Parent?.Relations?.Handling != null) 
@@ -445,6 +451,8 @@ public class RelationItem
         if (_owner.Parent != null)
             _owner.Parent.Relations!.Handling = _target;
 
+        float ox = _owner.X;
+        float oy = _owner.Y;
         float dx = _target.X - _targetData.x;
         float dy = _target.Y - _targetData.y;
 
@@ -453,11 +461,22 @@ public class RelationItem
 
         _targetData = (_target.X, _target.Y, _targetData.w, _targetData.h);
 
+        if (Math.Abs(ox - _owner.X) > 0.001f || Math.Abs(oy - _owner.Y) > 0.001f)
+        {
+            var ownerDx = _owner.X - ox;
+            var ownerDy = _owner.Y - oy;
+            _owner.UpdateGearFromRelations(1, ownerDx, ownerDy);
+            if (_owner.Parent is GComponent parent)
+            {
+                parent.UpdateTransitionsFromRelations(_owner, ownerDx, ownerDy);
+            }
+        }
+
         if (_owner.Parent != null)
             _owner.Parent.Relations!.Handling = null;
     }
 
-    void OnTargetSizeChanged(Event.EventContext context)
+    void OnTargetSizeChanged(EventContext context)
     {
         if (_target == null) return;
         if (_owner.Parent?.Relations?.Handling != null)
@@ -469,13 +488,38 @@ public class RelationItem
         if (_owner.Parent != null)
             _owner.Parent.Relations!.Handling = _target;
 
+        float ox = _owner.X;
+        float oy = _owner.Y;
+        float ow = _owner.Width;
+        float oh = _owner.Height;
+
         foreach (var info in _defs)
             ApplyOnSizeChanged(info);
 
         _targetData = (_targetData.x, _targetData.y, _target.Width, _target.Height);
+
+        if (Math.Abs(ox - _owner.X) > 0.001f || Math.Abs(oy - _owner.Y) > 0.001f)
+        {
+            var ownerDx = _owner.X - ox;
+            var ownerDy = _owner.Y - oy;
+            _owner.UpdateGearFromRelations(1, ownerDx, ownerDy);
+            if (_owner.Parent is GComponent parent)
+            {
+                parent.UpdateTransitionsFromRelations(_owner, ownerDx, ownerDy);
+            }
+        }
+
+        if (Math.Abs(ow - _owner.Width) > 0.001f || Math.Abs(oh - _owner.Height) > 0.001f)
+        {
+            var ownerDw = _owner.Width - ow;
+            var ownerDh = _owner.Height - oh;
+            _owner.UpdateGearFromRelations(2, ownerDw, ownerDh);
+        }
 
         if (_owner.Parent != null)
             _owner.Parent.Relations!.Handling = null;
     }
 }
 #endif
+
+

@@ -1,35 +1,39 @@
 #if CLIENT
 using System.Drawing;
-using SCEFGUI.Core;
-using SCEFGUI.Utils;
+using FairyGUI.Utils;
 
-namespace SCEFGUI.UI;
+namespace FairyGUI;
 
-public class FGUIComponent : FGUIObject
+public class GComponent : GObject
 {
-    protected readonly List<FGUIObject> _children = new();
-    protected readonly List<FGUIController> _controllers = new();
-    protected readonly List<FGUITransition> _transitions = new();
+    protected readonly List<GObject> _children = new();
+    protected readonly List<Controller> _controllers = new();
+    protected readonly List<Transition> _transitions = new();
     protected int _sortingChildCount;
     protected ChildrenRenderOrder _childrenRenderOrder = ChildrenRenderOrder.Ascent;
     protected int _apexIndex;
     protected bool _boundsChanged;
-    protected FGUIScrollPane? _scrollPane;
+    protected ScrollPane? _scrollPane;
     protected RectangleF? _clipRect;
     protected OverflowType _overflow = OverflowType.Visible;
     protected Margin _margin;
+    private bool _isDisposing;
     internal int BuildingDisplayList;
-    internal FGUIController? _applyingController;
+    internal Controller? _applyingController;
 
     public int NumChildren => _children.Count;
-    public FGUIScrollPane? ScrollPane => _scrollPane;
+    public ScrollPane? ScrollPane => _scrollPane;
     public OverflowType Overflow { get => _overflow; set => _overflow = value; }
     public Margin Margin { get => _margin; set { _margin = value; SetBoundsChangedFlag(); } }
     public bool Opaque { get; set; } = true;
+    /// <summary>遮罩子对象（FGUI 二进制第4块）。SDK 无稳定遮罩 API，渲染层尽力应用、找不到则降级。</summary>
+    public GObject? MaskObject { get; private set; }
+    /// <summary>是否反向遮罩。</summary>
+    public bool MaskInverted { get; private set; }
 
-    public FGUIObject AddChild(FGUIObject child) => AddChildAt(child, _children.Count);
+    public GObject AddChild(GObject child) => AddChildAt(child, _children.Count);
 
-    public FGUIObject AddChildAt(FGUIObject child, int index)
+    public GObject AddChildAt(GObject child, int index)
     {
         if (child.Parent == this) { SetChildIndex(child, index); }
         else
@@ -43,11 +47,12 @@ public class FGUIComponent : FGUIObject
             _children.Insert(index, child);
             ChildStateChanged(child);
             SetBoundsChangedFlag();
+            TryAutoEnsureListBounds();
         }
         return child;
     }
     
-    internal void ChildStateChanged(FGUIObject child)
+    internal void ChildStateChanged(GObject child)
     {
         if (NativeObject != null)
         {
@@ -56,41 +61,60 @@ public class FGUIComponent : FGUIObject
                 Render.SCERenderContext.Instance.CreateNativeControl(child);
             if (child.NativeObject != null)
             {
-                // Use AddChild/RemoveFromParent to control visibility (more reliable than Show/Hide in SCE)
                 if (finalVisible)
-                    Render.SCERenderContext.Instance.Adapter?.AddChild(NativeObject, child.NativeObject);
+                    Render.SCERenderContext.Instance.RenderChild(this, child);
                 else
-                    Render.SCERenderContext.Instance.Adapter?.RemoveFromParent(child.NativeObject);
+                    Render.SCERenderContext.Instance.RemoveFromParent(child);
             }
         }
     }
 
-    private int GetInsertPosForSortingChild(FGUIObject child)
+    private int GetInsertPosForSortingChild(GObject child)
     {
         for (int i = 0; i < _children.Count; i++)
             if (_children[i].SortingOrder > child.SortingOrder) return i;
         return _children.Count;
     }
 
-    public FGUIObject RemoveChild(FGUIObject child, bool dispose = false)
+    public GObject RemoveChild(GObject child, bool dispose = false)
     {
         int index = _children.IndexOf(child);
         if (index >= 0) return RemoveChildAt(index, dispose);
         return child;
     }
 
-    public FGUIObject RemoveChildAt(int index, bool dispose = false)
+    public GObject RemoveChildAt(int index, bool dispose = false)
     {
         if (index < 0 || index >= _children.Count) throw new ArgumentOutOfRangeException(nameof(index));
         var child = _children[index];
+        CloseComboDropdownsRecursive(child);
         child.Parent = null;
         if (child.SortingOrder != 0) _sortingChildCount--;
         _children.RemoveAt(index);
         if (child.NativeObject != null)
             Render.SCERenderContext.Instance.RemoveFromParent(child);
         SetBoundsChangedFlag();
+        TryAutoEnsureListBounds();
         if (dispose) child.Dispose();
         return child;
+    }
+
+    private static void CloseComboDropdownsRecursive(GObject node)
+    {
+        if (node is GComboBox combo)
+        {
+            combo.CloseDropdownByOwnerDetach();
+        }
+
+        if (node is not GComponent component)
+        {
+            return;
+        }
+
+        for (var i = 0; i < component._children.Count; i++)
+        {
+            CloseComboDropdownsRecursive(component._children[i]);
+        }
     }
 
     public void RemoveChildren(int beginIndex = 0, int endIndex = -1, bool dispose = false)
@@ -99,30 +123,30 @@ public class FGUIComponent : FGUIObject
         for (int i = endIndex; i >= beginIndex; i--) RemoveChildAt(i, dispose);
     }
 
-    public FGUIObject GetChildAt(int index)
+    public GObject GetChildAt(int index)
     {
         if (index < 0 || index >= _children.Count) throw new ArgumentOutOfRangeException(nameof(index));
         return _children[index];
     }
 
-    public FGUIObject? GetChild(string name) => _children.FirstOrDefault(c => c.Name == name);
-    public FGUIObject? GetChildById(string id) => _children.FirstOrDefault(c => c.Id == id);
+    public GObject? GetChild(string name) => _children.FirstOrDefault(c => c.Name == name);
+    public GObject? GetChildById(string id) => _children.FirstOrDefault(c => c.Id == id);
 
-    public FGUIObject? GetChildByPath(string path)
+    public GObject? GetChildByPath(string path)
     {
         var parts = path.Split('.');
-        FGUIComponent? current = this;
+        GComponent? current = this;
         for (int i = 0; i < parts.Length - 1; i++)
         {
-            current = current?.GetChild(parts[i]) as FGUIComponent;
+            current = current?.GetChild(parts[i]) as GComponent;
             if (current == null) return null;
         }
         return current?.GetChild(parts[^1]);
     }
 
-    public int GetChildIndex(FGUIObject child) => _children.IndexOf(child);
+    public int GetChildIndex(GObject child) => _children.IndexOf(child);
 
-    public void SetChildIndex(FGUIObject child, int index)
+    public void SetChildIndex(GObject child, int index)
     {
         int oldIndex = _children.IndexOf(child);
         if (oldIndex == -1) throw new ArgumentException("Not a child", nameof(child));
@@ -134,9 +158,10 @@ public class FGUIComponent : FGUIObject
         if (index > _children.Count) index = _children.Count;
         _children.Insert(index, child);
         SetBoundsChangedFlag();
+        TryAutoEnsureListBounds();
     }
 
-    public void SwapChildren(FGUIObject child1, FGUIObject child2)
+    public void SwapChildren(GObject child1, GObject child2)
     {
         int index1 = _children.IndexOf(child1);
         int index2 = _children.IndexOf(child2);
@@ -152,23 +177,54 @@ public class FGUIComponent : FGUIObject
         SetChildIndex(child2, index1);
     }
 
-    public IReadOnlyList<FGUIObject> Children => _children.AsReadOnly();
+    public IReadOnlyList<GObject> Children => _children.AsReadOnly();
 
     public int NumControllers => _controllers.Count;
-    public FGUIController? GetController(string name) => _controllers.FirstOrDefault(c => c.Name == name);
-    public FGUIController? GetControllerAt(int index) => (index >= 0 && index < _controllers.Count) ? _controllers[index] : null;
-    public void AddController(FGUIController controller) { _controllers.Add(controller); controller.Parent = this; }
-    public void RemoveController(FGUIController controller) { int index = _controllers.IndexOf(controller); if (index >= 0) { controller.Parent = null; _controllers.RemoveAt(index); } }
+    public Controller? GetController(string name) => _controllers.FirstOrDefault(c => c.Name == name);
+    public Controller? GetControllerAt(int index) => (index >= 0 && index < _controllers.Count) ? _controllers[index] : null;
+    public void AddController(Controller controller) { _controllers.Add(controller); controller.Parent = this; }
+    public void RemoveController(Controller controller) { int index = _controllers.IndexOf(controller); if (index >= 0) { controller.Parent = null; _controllers.RemoveAt(index); } }
 
-    public FGUITransition? GetTransition(string name) => _transitions.FirstOrDefault(t => t.Name == name);
-    public FGUITransition? GetTransitionAt(int index) => (index >= 0 && index < _transitions.Count) ? _transitions[index] : null;
+    public Transition? GetTransition(string name) => _transitions.FirstOrDefault(t => t.Name == name);
+    public Transition? GetTransitionAt(int index) => (index >= 0 && index < _transitions.Count) ? _transitions[index] : null;
 
-    public void ApplyController(FGUIController controller)
+    internal void UpdateTransitionsFromRelations(GObject target, float dx, float dy)
+    {
+        if (_transitions.Count == 0)
+        {
+            return;
+        }
+
+        for (var i = 0; i < _transitions.Count; i++)
+        {
+            _transitions[i].UpdateFromRelations(target, dx, dy);
+        }
+    }
+
+    public void ApplyController(Controller controller)
     {
         _applyingController = controller;
-        foreach (var child in _children)
+        try
+        {
+            ApplyControllerToDescendants(controller, this);
+            controller.RunActions();
+        }
+        finally
+        {
+            _applyingController = null;
+        }
+    }
+
+    private static void ApplyControllerToDescendants(Controller controller, GComponent root)
+    {
+        foreach (var child in root._children)
+        {
             child.HandleControllerChanged(controller);
-        _applyingController = null;
+            if (child is GComponent childComponent)
+            {
+                ApplyControllerToDescendants(controller, childComponent);
+            }
+        }
     }
 
     public void ApplyAllControllers()
@@ -177,11 +233,31 @@ public class FGUIComponent : FGUIObject
             ApplyController(controller);
     }
 
-    public void SetBoundsChangedFlag() { if (!_boundsChanged) _boundsChanged = true; }
+    public void SetBoundsChangedFlag()
+    {
+        if (_boundsChanged)
+        {
+            return;
+        }
+
+        _boundsChanged = true;
+        if (_scrollPane != null && NativeObject != null && !UnderConstruct && BuildingDisplayList == 0)
+        {
+            Render.SCERenderContext.Instance.RefreshComponentScrollState(this);
+        }
+    }
     public void EnsureBoundsCorrect() { if (_boundsChanged) UpdateBounds(); }
     protected virtual void UpdateBounds() => _boundsChanged = false;
 
-    internal void ChildSortingOrderChanged(FGUIObject child, int oldValue, int newValue)
+    private void TryAutoEnsureListBounds()
+    {
+        if (this is GList list && !list.IsVirtual && !list.UnderConstruct && !list.SuppressAutoEnsureBounds)
+        {
+            list.EnsureBoundsCorrect();
+        }
+    }
+
+    internal void ChildSortingOrderChanged(GObject child, int oldValue, int newValue)
     {
         if (oldValue == 0) _sortingChildCount++;
         else if (newValue == 0) _sortingChildCount--;
@@ -225,7 +301,7 @@ public class FGUIComponent : FGUIObject
         for (int i = 0; i < controllerCount; i++)
         {
             int nextPos = buffer.ReadUshort() + buffer.Position;
-            var controller = new FGUIController();
+            var controller = new Controller();
             _controllers.Add(controller);
             controller.Parent = this;
             controller.Setup(buffer);
@@ -246,13 +322,18 @@ public class FGUIComponent : FGUIObject
             PackageItem? pi = null;
             if (src != null)
             {
-                FGUIPackage? pkg = pkgId != null ? FGUIPackage.GetById(pkgId) : packageItem.Owner;
+                UIPackage? pkg = pkgId != null ? UIPackage.GetById(pkgId) : packageItem.Owner;
                 pi = pkg?.GetItem(src);
             }
-            FGUIObject? child = pi != null ? FGUIObjectFactory.NewObject(pi) : FGUIObjectFactory.NewObject(type);
+            GObject? child = pi != null ? UIObjectFactory.NewObject(pi) : UIObjectFactory.NewObject(type);
             if (child != null)
             {
-                if (pi != null) { child.PackageItem = pi; pi.Owner?.GetItemAsset(pi); }
+                if (pi != null)
+                {
+                    child.PackageItem = pi;
+                    pi.Owner?.GetItemAsset(pi);
+                    child.ConstructFromResource();
+                }
                 child.UnderConstruct = true;
                 child.Setup_BeforeAdd(buffer, curPos);
                 child.Parent = this;
@@ -298,6 +379,13 @@ public class FGUIComponent : FGUIObject
         buffer.Seek(0, 4);
         buffer.Skip(2);
         Opaque = buffer.ReadBool();
+        // 遮罩：maskId 为子对象索引，-1 表示无；随后 inverted 标记反向遮罩
+        int maskId = buffer.ReadShort();
+        if (maskId != -1)
+        {
+            MaskObject = GetChildAt(maskId);
+            MaskInverted = buffer.ReadBool();
+        }
         
         // Block 5: Transitions
         if (buffer.Seek(0, 5))
@@ -307,7 +395,7 @@ public class FGUIComponent : FGUIObject
             {
                 int nextPos = buffer.ReadUshort() + buffer.Position;
                 if (nextPos > buffer.Length) break;
-                var transition = new FGUITransition();
+                var transition = new Transition();
                 transition.Owner = this;
                 transition.Setup(buffer);
                 _transitions.Add(transition);
@@ -329,21 +417,83 @@ public class FGUIComponent : FGUIObject
         if (packageItem.ObjectType != ObjectType.Component)
             ConstructExtension(buffer);
 
-        // Recursively construct children that are components
-        foreach (var child in _children)
-        {
-            if (child is FGUIComponent comp)
-                comp.ConstructFromResource();
-        }
+        ConstructFromXML(new XML());
         
         Game.Logger.LogInformation($"[FGUI] Component parsed: {Name ?? PackageItem?.Name}, Size: {_width}x{_height}, Children: {_children.Count}, Controllers: {_controllers.Count}");
     }
 
+    public virtual void ConstructFromXML(XML xml) { }
+
     protected virtual void ConstructExtension(ByteBuffer buffer) { }
+
+    public override void Setup_AfterAdd(ByteBuffer buffer, int beginPos)
+    {
+        base.Setup_AfterAdd(buffer, beginPos);
+
+        if (!buffer.Seek(beginPos, 4))
+        {
+            return;
+        }
+
+        var pageController = buffer.ReadShort();
+        if (pageController != -1 && _scrollPane != null && _scrollPane.PageMode && Parent != null)
+        {
+            _scrollPane.PageController = Parent.GetControllerAt(pageController);
+        }
+
+        var cnt = buffer.ReadShort();
+        for (var i = 0; i < cnt; i++)
+        {
+            var controllerName = buffer.ReadS();
+            var pageId = buffer.ReadS();
+            if (controllerName == null || pageId == null)
+            {
+                continue;
+            }
+
+            var cc = GetController(controllerName);
+            if (cc != null)
+            {
+                cc.SelectedPageId = pageId;
+            }
+        }
+
+        if (buffer.Version < 2)
+        {
+            return;
+        }
+
+        cnt = buffer.ReadShort();
+        for (var i = 0; i < cnt; i++)
+        {
+            var target = buffer.ReadS();
+            var propertyId = buffer.ReadShort();
+            var value = buffer.ReadS();
+            if (target == null || value == null)
+            {
+                continue;
+            }
+
+            var obj = GetChildByPath(target);
+            if (obj == null)
+            {
+                continue;
+            }
+
+            if (propertyId == 0)
+            {
+                obj.Text = value;
+            }
+            else if (propertyId == 1)
+            {
+                obj.Icon = value;
+            }
+        }
+    }
 
     protected void SetupScroll(ByteBuffer buffer)
     {
-        _scrollPane = new FGUIScrollPane { Owner = this };
+        _scrollPane = new ScrollPane { Owner = this };
         _scrollPane.Setup(buffer);
     }
 
@@ -355,19 +505,37 @@ public class FGUIComponent : FGUIObject
 
     public override void Dispose()
     {
-        foreach (var child in _children) child.Dispose();
-        _children.Clear();
-        _scrollPane?.Dispose();
-        _scrollPane = null;
-        foreach (var transition in _transitions) transition.Dispose();
-        _transitions.Clear();
-        base.Dispose();
+        if (Disposed || _isDisposing) return;
+        _isDisposing = true;
+
+        // Avoid collection-version invalidation when child.Dispose() mutates parent links.
+        try
+        {
+            while (_children.Count > 0)
+            {
+                var last = _children.Count - 1;
+                var child = _children[last];
+                _children.RemoveAt(last);
+                child.Parent = null;
+                child.Dispose();
+            }
+
+            _scrollPane?.Dispose();
+            _scrollPane = null;
+
+            for (var i = _transitions.Count - 1; i >= 0; i--)
+            {
+                _transitions[i].Dispose();
+            }
+
+            _transitions.Clear();
+            base.Dispose();
+        }
+        finally
+        {
+            _isDisposing = false;
+        }
     }
 }
-
-public struct Margin
-{
-    public int Left, Right, Top, Bottom;
-    public Margin(int left, int right, int top, int bottom) { Left = left; Right = right; Top = top; Bottom = bottom; }
-}
 #endif
+

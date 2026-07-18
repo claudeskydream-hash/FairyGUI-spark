@@ -3,7 +3,7 @@ using System.Drawing;
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace SCEFGUI.Utils;
+namespace FairyGUI.Utils;
 
 /// <summary>
 /// UBB标签解析器 - 将UBB/HTML标签转换为纯文本和样式信息
@@ -433,3 +433,4 @@ public class RichTextParser
     }
 }
 #endif
+

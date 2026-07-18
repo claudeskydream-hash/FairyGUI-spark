@@ -2,10 +2,11 @@
 using System.Drawing;
 using System.Text;
 
-namespace SCEFGUI.Utils;
+namespace FairyGUI.Utils;
 
 public class ByteBuffer
 {
+    private static bool _readSInvalidFFFFLogged;
     public bool LittleEndian { get; set; }
     public string[]? StringTable { get; set; }
     public int Version { get; set; }
@@ -166,6 +167,16 @@ public class ByteBuffer
         if (_pointer + 2 > _length)
             throw new IndexOutOfRangeException($"ReadS: position={_pointer}, length={_length}");
         int index = ReadUshort();
+        if (index == 65535)
+        {
+            // Compatibility: some exports may emit 0xFFFF for optional "no string" fields.
+            if (!_readSInvalidFFFFLogged)
+            {
+                _readSInvalidFFFFLogged = true;
+                Game.Logger.LogWarning("[FGUI][ByteBuffer] ReadS got index=65535(0xFFFF), treat as null.");
+            }
+            return null;
+        }
         if (index == 65534) return null;
         if (index == 65533) return string.Empty;
         if (StringTable == null || index >= StringTable.Length)
@@ -184,7 +195,7 @@ public class ByteBuffer
     public void WriteS(string value)
     {
         int index = ReadUshort();
-        if (index != 65534 && index != 65533 && StringTable != null)
+        if (index != 65535 && index != 65534 && index != 65533 && StringTable != null)
             StringTable[index] = value;
     }
 
@@ -239,3 +250,4 @@ public class ByteBuffer
     }
 }
 #endif
+

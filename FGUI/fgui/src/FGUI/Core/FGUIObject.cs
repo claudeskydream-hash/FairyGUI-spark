@@ -1,14 +1,13 @@
 #if CLIENT
 using System.Drawing;
-using SCEFGUI.Event;
-using SCEFGUI.Gears;
-using SCEFGUI.Render;
-using SCEFGUI.UI;
-using SCEFGUI.Utils;
+using FairyGUI;
+using FairyGUI.Gears;
+using FairyGUI.Render;
+using FairyGUI.Utils;
 
-namespace SCEFGUI.Core;
+namespace FairyGUI;
 
-public class FGUIObject : EventDispatcher
+public class GObject : EventDispatcher
 {
     private static uint _gInstanceCounter;
 
@@ -25,9 +24,9 @@ public class FGUIObject : EventDispatcher
     public int MinHeight { get; set; }
     public int MaxHeight { get; set; }
 
-    public FGUIComponent? Parent { get; internal set; }
+    public GComponent? Parent { get; internal set; }
     public PackageItem? PackageItem { get; set; }
-    public FGUIGroup? Group { get; set; }
+    public GGroup? Group { get; set; }
     public string? ResourceUrl { get; internal set; }
 
     protected float _x, _y, _z;
@@ -53,7 +52,7 @@ public class FGUIObject : EventDispatcher
     internal bool GearLocked;
     internal float SizePercentInGroup;
     internal bool Disposed;
-    internal UI.FGUITreeNode? _treeNode;
+    internal GTreeNode? _treeNode;
     
     // Gesture support
     private bool _touchBehaviorEnabled;
@@ -90,11 +89,11 @@ public class FGUIObject : EventDispatcher
                 EnableDrag(); 
         } 
     }
-    public UI.Relations? Relations { get; private set; }
+    public Relations? Relations { get; private set; }
     
-    public void InitRelations() => Relations ??= new UI.Relations(this);
+    public void InitRelations() => Relations ??= new Relations(this);
 
-    public FGUIObject() { Id = "_n" + _gInstanceCounter++; }
+    public GObject() { Id = "_n" + _gInstanceCounter++; }
 
     public float X { get => _x; set => SetPosition(value, _y, _z); }
     public float Y { get => _y; set => SetPosition(_x, value, _z); }
@@ -137,9 +136,18 @@ public class FGUIObject : EventDispatcher
             if ((_pivotX != 0 || _pivotY != 0) && !_pivotAsAnchor && !ignorePivot)
                 SetXY(_x - _pivotX * dWidth, _y - _pivotY * dHeight);
             UpdateGear(2);
-            Parent?.SetBoundsChangedFlag();
-            Group?.SetBoundsChangedFlag();
+            if (Parent != null)
+            {
+                Relations?.OnOwnerSizeChanged(dWidth, dHeight, _pivotAsAnchor || !ignorePivot);
+                Parent.SetBoundsChangedFlag();
+                Group?.SetBoundsChangedFlag();
+            }
+            else
+            {
+                Group?.SetBoundsChangedFlag();
+            }
             DispatchEvent("onSizeChanged", null);
+
         }
     }
 
@@ -155,7 +163,14 @@ public class FGUIObject : EventDispatcher
 
     public void SetScale(float sx, float sy)
     {
-        if (_scaleX != sx || _scaleY != sy) { _scaleX = sx; _scaleY = sy; HandleScaleChanged(); UpdateGear(2); }
+        if (_scaleX != sx || _scaleY != sy)
+        {
+            _scaleX = sx;
+            _scaleY = sy;
+            HandleScaleChanged();
+            UpdateGear(2);
+
+        }
     }
 
     public float Rotation { get => _rotation; set { if (_rotation != value) { _rotation = value; HandleRotationChanged(); UpdateGear(3); } } }
@@ -222,17 +237,17 @@ public class FGUIObject : EventDispatcher
 
     public void RemoveFromParent() => Parent?.RemoveChild(this);
 
-    public FGUIRoot? Root
+    public GObject? Root
     {
         get
         {
-            FGUIObject p = this;
+            GObject p = this;
             while (p.Parent != null) p = p.Parent;
-            return p as FGUIRoot;
+            return p;
         }
     }
 
-    public string? ResourceURL => PackageItem != null ? FGUIPackage.URL_PREFIX + PackageItem.Owner?.Id + PackageItem.Id : null;
+    public string? ResourceURL => PackageItem != null ? UIPackage.URL_PREFIX + PackageItem.Owner?.Id + PackageItem.Id : null;
 
     // Gear system
     public GearBase GetGear(int index)
@@ -267,7 +282,43 @@ public class FGUIObject : EventDispatcher
             gear.UpdateState();
     }
 
-    internal bool CheckGearController(int index, FGUIController c) => _gears[index] != null && _gears[index]!.Controller == c;
+    internal void UpdateGearFromRelations(int index, float dx, float dy)
+    {
+        if (UnderConstruct || GearLocked)
+            return;
+
+        var gear = _gears[index];
+        if (gear != null)
+            gear.UpdateFromRelations(dx, dy);
+    }
+
+    internal bool CheckGearController(int index, Controller c) => _gears[index] != null && _gears[index]!.Controller == c;
+
+    internal uint AddDisplayLock()
+    {
+        if (_gears[0] is GearDisplay displayGear)
+        {
+            uint token = displayGear.AddLock();
+            CheckGearDisplay();
+            return token;
+        }
+
+        return 0;
+    }
+
+    internal void ReleaseDisplayLock(uint token)
+    {
+        if (token == 0)
+        {
+            return;
+        }
+
+        if (_gears[0] is GearDisplay displayGear)
+        {
+            displayGear.ReleaseLock(token);
+            CheckGearDisplay();
+        }
+    }
 
     void CheckGearDisplay()
     {
@@ -275,6 +326,12 @@ public class FGUIObject : EventDispatcher
         bool connected = _gears[0] is not GearDisplay gd || gd.Connected;
         if (_gears[8] is GearDisplay2 gd2)
             connected = gd2.Evaluate(connected);
+        if (string.Equals(Name, "btns", StringComparison.Ordinal))
+            Game.Logger.LogInformation(
+                "[FGUI][GearDisplay][btns][CHECK] connected={Connected} internalVisible={InternalVisible} finalVisible={FinalVisible}",
+                connected,
+                _internalVisible,
+                FinalVisible);
         if (connected != _internalVisible)
         {
             _internalVisible = connected;
@@ -292,14 +349,29 @@ public class FGUIObject : EventDispatcher
     protected virtual void HandleVisibleChanged()
     {
         if (NativeObject != null)
+        {
             SCERenderContext.Instance.Adapter?.SetVisible(NativeObject, _visible && _internalVisible);
+            return;
+        }
+
+        // If a child becomes visible after being attached while invisible,
+        // ensure parent materializes native control for this node.
+        if (Parent != null && FinalVisible)
+        {
+            Parent.ChildStateChanged(this);
+        }
     }
     protected virtual void HandleTouchableChanged() { if (NativeObject != null) SCERenderContext.Instance.Adapter?.SetTouchable(NativeObject, _touchable); }
     protected virtual void HandleGrayedChanged() { if (NativeObject != null) SCERenderContext.Instance.Adapter?.SetGrayed(NativeObject, _grayed); }
 
     public void CreateDisplay() { if (NativeObject == null) SCERenderContext.Instance.CreateNativeControl(this); }
-    public void AddToStage() { CreateDisplay(); SCERenderContext.Instance.AddToRoot(this); }
-    public void RemoveFromStage() => SCERenderContext.Instance.RemoveFromParent(this);
+    public void AddToStage()
+    {
+        CreateDisplay();
+        UIRuntime.PrepareRootForStage(this);
+        SCERenderContext.Instance.AddToRoot(this);
+    }
+    public void RemoveFromStage() => UIRuntime.RemoveFromRoot(this, dispose: false);
 
     public virtual void ConstructFromResource() { }
 
@@ -330,33 +402,33 @@ public class FGUIObject : EventDispatcher
 
     public virtual void Setup_AfterAdd(ByteBuffer buffer, int beginPos)
     {
-        if (!buffer.Seek(beginPos, 1))
-            return;
-            
-        buffer.ReadS(); // tooltips
-        
-        int groupId = buffer.ReadShort();
-        if (groupId >= 0 && Parent != null)
-            Group = Parent.GetChildAt(groupId) as FGUIGroup;
-        
+        if (buffer.Seek(beginPos, 1))
+        {
+            buffer.ReadS(); // tooltips
+
+            int groupId = buffer.ReadShort();
+            if (groupId >= 0 && Parent != null)
+                Group = Parent.GetChildAt(groupId) as GGroup;
+        }
+
         if (!buffer.Seek(beginPos, 2))
             return;
-            
+
         int cnt = buffer.ReadShort();
         for (int i = 0; i < cnt; i++)
         {
             int nextPos = buffer.ReadUshort();
             nextPos += buffer.Position;
-            
+
             int gearType = buffer.ReadByte();
             var gear = GetGear(gearType);
             gear.Setup(buffer);
-            
+
             buffer.Position = nextPos;
         }
     }
     
-    public virtual void HandleControllerChanged(FGUIController controller)
+    public virtual void HandleControllerChanged(Controller controller)
     {
         _handlingController = true;
         
@@ -448,7 +520,8 @@ public class FGUIObject : EventDispatcher
         
         float startObjX = 0, startObjY = 0;  // 对象起始位置
         float startTouchX = 0, startTouchY = 0;  // 触摸起始位置
-        float scaleFactor = FGUIManager.ContentScaleFactor;
+        float lastTouchX = 0, lastTouchY = 0;
+        float scaleFactor = UIRuntime.ContentScaleFactor;
         
         // 使用带位置的按下事件
         adapter.OnPointerPressWithPosition(_nativeObject, (pressX, pressY) =>
@@ -458,9 +531,11 @@ public class FGUIObject : EventDispatcher
             startObjY = _y;
             startTouchX = pressX;
             startTouchY = pressY;
+            lastTouchX = pressX;
+            lastTouchY = pressY;
             
             // 先触发拖拽开始事件，让用户有机会调用PreventDefault()
-            var ctx = new Event.EventContext { Sender = this, Type = "onDragStart" };
+            var ctx = new EventContext { Sender = this, Type = "onDragStart" };
             DispatchEventWithContext("onDragStart", ctx, null);
             
             // 如果用户没有阻止默认行为，才开始拖拽
@@ -480,6 +555,16 @@ public class FGUIObject : EventDispatcher
         {
             if (_isPointerCaptured && _draggable)
             {
+                lastTouchX = moveX;
+                lastTouchY = moveY;
+
+                // DragDropManager agent mode: move the drag agent instead of source object.
+                if (DragDropManager.IsDragging && ReferenceEquals(DragDropManager.Source, this))
+                {
+                    DragDropManager.OnDragMove(new PointF(moveX, moveY));
+                    return;
+                }
+
                 // 计算触摸位移（需要考虑缩放因子，因为触摸坐标是屏幕坐标）
                 float deltaX = (moveX - startTouchX) / scaleFactor;
                 float deltaY = (moveY - startTouchY) / scaleFactor;
@@ -500,6 +585,7 @@ public class FGUIObject : EventDispatcher
         {
             if (_isPointerCaptured)
             {
+                DragDropManager.OnDragMove(new PointF(lastTouchX, lastTouchY));
                 adapter.ReleasePointer(_nativeObject);
                 _isPointerCaptured = false;
                 
@@ -562,3 +648,5 @@ public class FGUIObject : EventDispatcher
     }
 }
 #endif
+
+

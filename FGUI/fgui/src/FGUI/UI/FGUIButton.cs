@@ -1,15 +1,13 @@
 #if CLIENT
 using System.Drawing;
-using SCEFGUI.Core;
-using SCEFGUI.Event;
-using SCEFGUI.Utils;
+using FairyGUI.Utils;
 
-namespace SCEFGUI.UI;
+namespace FairyGUI;
 
-public enum ButtonMode { Common, Check, Radio }
-
-public class FGUIButton : FGUIComponent, IColorGear
+public class GButton : GComponent, IColorGear
 {
+    private const bool EnableButtonDiagLogs = false;
+
     public const string UP = "up";
     public const string DOWN = "down";
     public const string OVER = "over";
@@ -19,11 +17,11 @@ public class FGUIButton : FGUIComponent, IColorGear
 
     public bool ChangeStateOnClick { get; set; } = true;
 
-    protected FGUIObject? _titleObject;
-    protected FGUIObject? _iconObject;
-    protected FGUIController? _relatedController;
+    protected GObject? _titleObject;
+    protected GObject? _iconObject;
+    protected Controller? _relatedController;
     protected string? _relatedPageId;
-    protected FGUIController? _buttonController;
+    protected Controller? _buttonController;
 
     private ButtonMode _mode;
     private bool _selected;
@@ -36,10 +34,50 @@ public class FGUIButton : FGUIComponent, IColorGear
     private bool _downScaled;
     private bool _down;
     private bool _over;
+    private bool _suppressDownEffectScale;
+    private bool _suppressInteractiveStateTransition;
+    private long _lastClickTick;
 
     private EventListener? _onChanged;
 
     public EventListener OnChanged => _onChanged ??= new EventListener();
+    public bool SuppressDownEffectScale
+    {
+        get => _suppressDownEffectScale;
+        set
+        {
+            if (_suppressDownEffectScale == value)
+            {
+                return;
+            }
+
+            _suppressDownEffectScale = value;
+            if (_suppressDownEffectScale)
+            {
+                ResetDownScaleIfNeeded();
+            }
+        }
+    }
+
+    public bool SuppressInteractiveStateTransition
+    {
+        get => _suppressInteractiveStateTransition;
+        set
+        {
+            if (_suppressInteractiveStateTransition == value)
+            {
+                return;
+            }
+
+            _suppressInteractiveStateTransition = value;
+            if (_suppressInteractiveStateTransition)
+            {
+                _over = false;
+                _down = false;
+                SetState(UP);
+            }
+        }
+    }
 
     public override string? Icon
     {
@@ -48,7 +86,7 @@ public class FGUIButton : FGUIComponent, IColorGear
         {
             _icon = value;
             var val = (_selected && _selectedIcon != null) ? _selectedIcon : _icon;
-            if (_iconObject != null) _iconObject.Icon = val;
+            if (_iconObject != null) _iconObject.Icon = ResolveIconUrl(val);
         }
     }
 
@@ -76,7 +114,7 @@ public class FGUIButton : FGUIComponent, IColorGear
         {
             _selectedIcon = value;
             var val = (_selected && _selectedIcon != null) ? _selectedIcon : _icon;
-            if (_iconObject != null) _iconObject.Icon = val;
+            if (_iconObject != null) _iconObject.Icon = ResolveIconUrl(val);
         }
     }
 
@@ -122,11 +160,15 @@ public class FGUIButton : FGUIComponent, IColorGear
                 if (_selectedTitle != null && _titleObject != null)
                     _titleObject.Text = _selected ? _selectedTitle : _title;
                 if (_selectedIcon != null && _iconObject != null)
-                    _iconObject.Icon = _selected ? _selectedIcon : _icon;
+                    _iconObject.Icon = ResolveIconUrl(_selected ? _selectedIcon : _icon);
                 if (_relatedController != null && Parent != null && Parent.BuildingDisplayList == 0)
                 {
                     if (_selected)
-                        _relatedController.SelectedPageId = _relatedPageId ?? "";
+                        _relatedController.SetSelectedPageByToken(_relatedPageId);
+                    else if (_mode == ButtonMode.Check
+                        && !string.IsNullOrWhiteSpace(_relatedPageId)
+                        && _relatedController.IsCurrentPageToken(_relatedPageId))
+                        _relatedController.OppositePageId = _relatedPageId;
                 }
             }
         }
@@ -138,7 +180,7 @@ public class FGUIButton : FGUIComponent, IColorGear
         set { if (_mode != value) { if (value == ButtonMode.Common) Selected = false; _mode = value; } }
     }
 
-    public FGUIController? RelatedController
+    public Controller? RelatedController
     {
         get => _relatedController;
         set { if (value != _relatedController) { _relatedController = value; _relatedPageId = null; } }
@@ -146,18 +188,55 @@ public class FGUIButton : FGUIComponent, IColorGear
 
     public string? RelatedPageId { get => _relatedPageId; set => _relatedPageId = value; }
 
-    public FGUITextField? GetTextField()
+    public GTextField? GetTextField()
     {
-        if (_titleObject is FGUITextField tf) return tf;
-        if (_titleObject is FGUILabel label) return label.GetTextField();
-        if (_titleObject is FGUIButton btn) return btn.GetTextField();
+        if (_titleObject is GTextField tf) return tf;
+        if (_titleObject is GLabel label) return label.GetTextField();
+        if (_titleObject is GButton btn) return btn.GetTextField();
         return null;
     }
 
     protected void SetState(string val)
     {
+        if (_suppressInteractiveStateTransition && !IsCloseButton())
+        {
+            if (val == OVER || val == DOWN || val == SELECTED_OVER)
+            {
+                val = UP;
+            }
+            else if (val == SELECTED_DISABLED)
+            {
+                val = DISABLED;
+            }
+        }
+
         if (_buttonController != null)
-            _buttonController.SelectedPage = val;
+        {
+            if (!TrySetControllerState(val) && _buttonController.PageCount > 0 && val == UP)
+            {
+                _buttonController.SelectedIndex = 0;
+                if (EnableButtonDiagLogs)
+                {
+                    Game.Logger.LogInformation(
+                        "[FGUI] Button fallback to page index 0: button={ButtonName}, controller={Controller}",
+                        Name, _buttonController.Name);
+                }
+            }
+        }
+
+        // CloseButton 在 SCE 里优先保证“按下缩小”触感，不依赖导出 downEffect 配置。
+        if (IsCloseButton())
+        {
+            if (_suppressDownEffectScale)
+            {
+                ResetDownScaleIfNeeded();
+            }
+            else
+            {
+                ApplyDownScaleByState(val, ResolveDownScaleFactor());
+            }
+            return;
+        }
 
         if (_downEffect == 1)
         {
@@ -165,25 +244,25 @@ public class FGUIButton : FGUIComponent, IColorGear
             if (val == DOWN || val == SELECTED_OVER || val == SELECTED_DISABLED)
             {
                 foreach (var child in _children)
-                    if (child is IColorGear cg && child is not FGUITextField)
+                    if (child is IColorGear cg && child is not GTextField)
                         cg.Color = Color.FromArgb(255, (int)(255 * v), (int)(255 * v), (int)(255 * v));
             }
             else
             {
                 foreach (var child in _children)
-                    if (child is IColorGear cg && child is not FGUITextField)
+                    if (child is IColorGear cg && child is not GTextField)
                         cg.Color = Color.White;
             }
         }
         else if (_downEffect == 2)
         {
-            if (val == DOWN || val == SELECTED_OVER || val == SELECTED_DISABLED)
+            if (_suppressDownEffectScale)
             {
-                if (!_downScaled) { _downScaled = true; SetScale(ScaleX * _downEffectValue, ScaleY * _downEffectValue); }
+                ResetDownScaleIfNeeded();
             }
             else
             {
-                if (_downScaled) { _downScaled = false; SetScale(ScaleX / _downEffectValue, ScaleY / _downEffectValue); }
+                ApplyDownScaleByState(val, ResolveDownScaleFactor());
             }
         }
     }
@@ -196,11 +275,11 @@ public class FGUIButton : FGUIComponent, IColorGear
             SetState(_selected ? (_over ? SELECTED_OVER : DOWN) : (_over ? OVER : UP));
     }
 
-    public override void HandleControllerChanged(FGUIController c)
+    public override void HandleControllerChanged(Controller c)
     {
         base.HandleControllerChanged(c);
         if (_relatedController == c)
-            Selected = _relatedPageId == c.SelectedPageId;
+            Selected = !string.IsNullOrWhiteSpace(_relatedPageId) && c.IsCurrentPageToken(_relatedPageId);
     }
 
     protected override void HandleGrayedChanged()
@@ -223,23 +302,186 @@ public class FGUIButton : FGUIComponent, IColorGear
         if (_downEffect == 2)
             SetPivot(0.5f, 0.5f, PivotAsAnchor);
 
-        _buttonController = GetController("button");
+        _buttonController = GetController("button") ?? FindButtonStateControllerFallback();
         _titleObject = GetChild("title");
         _iconObject = GetChild("icon");
+        if (_titleObject != null)
+        {
+            _titleObject.Touchable = false;
+        }
+        if (_iconObject != null)
+        {
+            _iconObject.Touchable = false;
+        }
 
         // Apply title/icon that was set in Setup_AfterAdd to the child objects
         if (_titleObject != null && !string.IsNullOrEmpty(_title))
             _titleObject.Text = _title;
         if (_iconObject != null && !string.IsNullOrEmpty(_icon))
-            _iconObject.Icon = _icon;
+            _iconObject.Icon = ResolveIconUrl(_icon);
 
         if (_mode == ButtonMode.Common)
-            SetState(UP);
+            SetCurrentState();
+
+        // Re-apply grayed after button controller is resolved.
+        // Setup_BeforeAdd may set Grayed before ConstructExtension assigns _buttonController,
+        // which can otherwise override disabled visual state during initial SetState.
+        if (Grayed)
+            HandleGrayedChanged();
 
         // 注册事件处理器
         RegisterEventHandlers();
 
-        Game.Logger.LogInformation($"[FGUI] Button ConstructExtension: name='{Name}', title='{_title}', titleObjText='{_titleObject?.Text}', mode={_mode}");
+        if (EnableButtonDiagLogs)
+        {
+            Game.Logger.LogInformation(
+                "[FGUI] Button ConstructExtension: name='{Name}', title='{Title}', titleObjText='{TitleObj}', mode={Mode}, buttonController={ControllerName}, pageCount={PageCount}, childCount={ChildCount}",
+                Name, _title, _titleObject?.Text, _mode, _buttonController?.Name ?? "<none>", _buttonController?.PageCount ?? 0, NumChildren);
+        }
+    }
+
+    private bool TrySetControllerState(string val)
+    {
+        if (_buttonController == null)
+        {
+            return false;
+        }
+
+        if (_buttonController.HasPage(val))
+        {
+            _buttonController.SelectedPage = val;
+            return true;
+        }
+
+        var aliases = val switch
+        {
+            UP => new[] { "up", "normal", "default" },
+            OVER => new[] { "over", "hover" },
+            DOWN => new[] { "down", "pressed", "press", "selected" },
+            DISABLED => new[] { "disabled", "gray", "grayed" },
+            SELECTED_OVER => new[] { "selectedover", "selected_over", "selected-over", "over" },
+            SELECTED_DISABLED => new[] { "selecteddisabled", "selected_disabled", "selected-disabled", "disabled" },
+            _ => new[] { val }
+        };
+
+        foreach (var alias in aliases)
+        {
+            var pageIndex = _buttonController.GetPageIndexByName(alias);
+            if (pageIndex < 0)
+            {
+                continue;
+            }
+
+            _buttonController.SelectedIndex = pageIndex;
+            if (EnableButtonDiagLogs)
+            {
+                Game.Logger.LogInformation(
+                    "[FGUI] Button state alias mapped: button={ButtonName}, requested={Requested}, alias={Alias}, controller={Controller}, index={Index}",
+                    Name, val, alias, _buttonController.Name, pageIndex);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    private Controller? FindButtonStateControllerFallback()
+    {
+        Controller? first = null;
+        for (var i = 0; i < NumControllers; i++)
+        {
+            var controller = GetControllerAt(i);
+            if (controller == null)
+            {
+                continue;
+            }
+
+            first ??= controller;
+            if (!controller.HasPage(UP))
+            {
+                continue;
+            }
+
+            if (controller.HasPage(DOWN) || controller.HasPage(OVER) || controller.HasPage(DISABLED))
+            {
+                if (EnableButtonDiagLogs)
+                {
+                    Game.Logger.LogInformation(
+                        "[FGUI] Button controller fallback selected: button={ButtonName}, controller={Controller}, pageCount={PageCount}",
+                        Name, controller.Name, controller.PageCount);
+                }
+                return controller;
+            }
+        }
+
+        return first;
+    }
+
+    private bool IsCloseButton()
+    {
+        if (!string.IsNullOrWhiteSpace(Name) &&
+            Name.Contains("close", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var itemName = PackageItem?.Name;
+        return !string.IsNullOrWhiteSpace(itemName) &&
+               itemName.Contains("close", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private float ResolveDownScaleFactor()
+    {
+        var factor = _downEffectValue;
+        if (!float.IsFinite(factor) || factor <= 0f)
+        {
+            factor = 0.8f;
+        }
+
+        if (IsCloseButton())
+        {
+            if (factor >= 1f)
+            {
+                factor = 1f / MathF.Max(1.0001f, factor);
+            }
+
+            // 统一 close button 的触感：按下为缩小，不允许放大。
+            return Math.Clamp(factor, 0.5f, 0.95f);
+        }
+
+        return Math.Clamp(factor, 0.05f, 4f);
+    }
+
+    private void ApplyDownScaleByState(string val, float scaleFactor)
+    {
+        if (val == DOWN || val == SELECTED_OVER || val == SELECTED_DISABLED)
+        {
+            if (!_downScaled)
+            {
+                _downScaled = true;
+                SetScale(ScaleX * scaleFactor, ScaleY * scaleFactor);
+            }
+        }
+        else
+        {
+            if (_downScaled)
+            {
+                _downScaled = false;
+                SetScale(ScaleX / scaleFactor, ScaleY / scaleFactor);
+            }
+        }
+    }
+
+    private void ResetDownScaleIfNeeded()
+    {
+        if (!_downScaled)
+        {
+            return;
+        }
+
+        _downScaled = false;
+        var factor = ResolveDownScaleFactor();
+        SetScale(ScaleX / factor, ScaleY / factor);
     }
 
     /// <summary>
@@ -247,9 +489,9 @@ public class FGUIButton : FGUIComponent, IColorGear
     /// </summary>
     private void RegisterEventHandlers()
     {
-        // 鼠标进入/离开事件
-        AddEventListener("onPointerEnter", HandleRollOver);
-        AddEventListener("onPointerLeave", HandleRollOut);
+        // RollOver/RollOut 为 FairyGUI 语义
+        AddEventListener("onRollOver", HandleRollOver);
+        AddEventListener("onRollOut", HandleRollOut);
 
         // 触摸/点击事件
         AddEventListener("onTouchBegin", HandleTouchBegin);
@@ -301,8 +543,11 @@ public class FGUIButton : FGUIComponent, IColorGear
     /// </summary>
     private void HandleTouchBegin(EventContext context)
     {
+        if (_down)
+            return;
+
         _down = true;
-        // context.CaptureTouch(); // SCE中可能需要不同的实现
+        StartDrag(); // Pointer capture equivalent
 
         if (_mode == ButtonMode.Common)
         {
@@ -343,6 +588,8 @@ public class FGUIButton : FGUIComponent, IColorGear
                 }
             }
         }
+
+        StopDrag();
     }
 
     /// <summary>
@@ -350,6 +597,16 @@ public class FGUIButton : FGUIComponent, IColorGear
     /// </summary>
     private void HandleClick(EventContext context)
     {
+        // SCE pointer routing can emit duplicated click callbacks in the same physical tap.
+        // Keep FairyGUI button semantics: one state toggle per real click.
+        var nowTick = Environment.TickCount64;
+        if (nowTick - _lastClickTick >= 0 && nowTick - _lastClickTick < 60)
+        {
+            return;
+        }
+
+        _lastClickTick = nowTick;
+
         // TODO: 音效播放
         // if (sound != null) { ... }
 
@@ -372,7 +629,7 @@ public class FGUIButton : FGUIComponent, IColorGear
         else // Common mode
         {
             if (_relatedController != null && _relatedPageId != null)
-                _relatedController.SelectedPageId = _relatedPageId;
+                _relatedController.SetSelectedPageByToken(_relatedPageId);
         }
     }
 
@@ -381,6 +638,7 @@ public class FGUIButton : FGUIComponent, IColorGear
     /// </summary>
     private void HandleRemovedFromStage(EventContext context)
     {
+        StopDrag();
         if (_over)
             HandleRollOut(context);
     }
@@ -396,7 +654,7 @@ public class FGUIButton : FGUIComponent, IColorGear
         {
             SetState(DOWN);
             // 延迟恢复状态
-            Tween.GTween.DelayedCall(0.1f, () =>
+            GTween.DelayedCall(0.1f, () =>
             {
                 SetState(_over ? OVER : UP);
             });
@@ -406,6 +664,38 @@ public class FGUIButton : FGUIComponent, IColorGear
         {
             HandleClick(new EventContext());
         }
+    }
+
+    private string? ResolveIconUrl(string? rawIcon)
+    {
+        if (string.IsNullOrWhiteSpace(rawIcon))
+            return rawIcon;
+
+        if (rawIcon.StartsWith(UIPackage.URL_PREFIX, StringComparison.OrdinalIgnoreCase))
+            return rawIcon;
+
+        var owner = PackageItem?.Owner;
+        if (owner?.Name == null)
+            return rawIcon;
+
+        var iconKey = rawIcon.Trim();
+        var item = owner.GetItemByName(iconKey) ?? owner.GetItem(iconKey);
+        if (item == null)
+        {
+            item = owner.GetItems().FirstOrDefault(x =>
+                !string.IsNullOrWhiteSpace(x.Name) &&
+                (x.Name.Equals(iconKey, StringComparison.OrdinalIgnoreCase) ||
+                 x.Name.EndsWith("/" + iconKey, StringComparison.OrdinalIgnoreCase) ||
+                 x.Name.EndsWith(iconKey, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        if (item == null || string.IsNullOrWhiteSpace(item.Id) || string.IsNullOrWhiteSpace(owner.Id))
+        {
+            Game.Logger.LogWarning("[FGUI][Icon] button icon unresolved raw={Raw} owner={Owner}", iconKey, owner.Name);
+            return rawIcon;
+        }
+
+        return UIPackage.URL_PREFIX + owner.Id + item.Id;
     }
 
     public override void Setup_AfterAdd(ByteBuffer buffer, int beginPos)
@@ -450,7 +740,10 @@ public class FGUIButton : FGUIComponent, IColorGear
 
         Selected = buffer.ReadBool();
 
-        Game.Logger.LogInformation($"[FGUI] Button Setup_AfterAdd: title='{_title}', selected={_selected}");
+        if (EnableButtonDiagLogs)
+        {
+            Game.Logger.LogInformation($"[FGUI] Button Setup_AfterAdd: title='{_title}', selected={_selected}");
+        }
     }
 }
 
@@ -459,3 +752,4 @@ public interface IColorGear
     Color Color { get; set; }
 }
 #endif
+

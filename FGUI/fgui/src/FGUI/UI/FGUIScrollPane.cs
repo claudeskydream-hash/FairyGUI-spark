@@ -1,14 +1,14 @@
 #if CLIENT
 using System.Drawing;
-using SCEFGUI.Core;
-using SCEFGUI.Tween;
-using SCEFGUI.Utils;
+using FairyGUI;
+using FairyGUI.Render;
+using FairyGUI.Utils;
 
-namespace SCEFGUI.UI;
+namespace FairyGUI;
 
-public class FGUIScrollPane
+public class ScrollPane
 {
-    public FGUIComponent? Owner { get; internal set; }
+    public GComponent? Owner { get; internal set; }
 
     private ScrollType _scrollType = ScrollType.Vertical;
     private float _scrollSpeed = 1;
@@ -31,8 +31,8 @@ public class FGUIScrollPane
     private bool _isHolding;
 
     // Scrollbars
-    private FGUIObject? _hScrollBar;
-    private FGUIObject? _vScrollBar;
+    private GObject? _hScrollBar;
+    private GObject? _vScrollBar;
     private bool _hScrollBarVisible;
     private bool _vScrollBarVisible;
 
@@ -42,19 +42,32 @@ public class FGUIScrollPane
 
     // Pagination
     private bool _pageMode;
-    private FGUIController? _pageController;
+    private Controller? _pageController;
     private float _pageWidth, _pageHeight;
     private bool _snapToItem;
 
     // Pull to refresh
-    private FGUIComponent? _header;
-    private FGUIComponent? _footer;
+    private GComponent? _header;
+    private GComponent? _footer;
     private int _headerLockedSize;
     private int _footerLockedSize;
 
     // Constants
     private const float PULL_RATIO = 0.5f;
     private const float SCROLL_THRESHOLD = 5f;
+
+    // ===== 惯性手感旋钮（想要更长惯性就调这里）=====
+    /// <summary>惯性滑行距离系数：越大，松手后滑得越远。默认 0.3；当前用"明显长"预设 0.7（可调 0.6~1.0）。</summary>
+    private const float INERTIA_DISTANCE_FACTOR = 0.3f;
+    /// <summary>触发惯性所需的最小松手速度（低于此值不滑行）。默认 100。</summary>
+    private const float INERTIA_VELOCITY_THRESHOLD = 100f;
+    /// <summary>惯性动画时长换算：滑行距离 / 该值 = 秒数。越小，动画越慢越长。默认 500；当前预设 400。</summary>
+    private const float INERTIA_DURATION_DIVISOR = 600f;
+    /// <summary>惯性/回弹动画的最短、最长时长（秒）。想更长惯性把最大值加大；默认 0.1~0.5，当前预设上限 1.2。</summary>
+    private const float SCROLL_ANIM_MIN_DURATION = 0.2f;
+    private const float SCROLL_ANIM_MAX_DURATION = 0.8f;
+    /// <summary>过界(橡皮筋)最大可拖距离占视口尺寸的比例。跟手拖到此极限就不再继续，松手弹回。默认 0.3。</summary>
+    private const float MAX_OVERSCROLL_RATIO = 0.5f;
 
     public ScrollType ScrollType => _scrollType;
     public float PosX { get => _xPos; set => SetPos(value, _yPos, false); }
@@ -84,9 +97,27 @@ public class FGUIScrollPane
     public float ScrollingPosX => _xPos;
     public float ScrollingPosY => _yPos;
 
+    /// <summary>FGUI 编辑器里配置的滚动条显示方式（Default/Visible/Auto/Hidden）。</summary>
+    public ScrollBarDisplayType ScrollBarDisplay => _scrollBarDisplayType;
+
     // Pagination properties
-    public bool PageMode { get => _pageMode; set => _pageMode = value; }
-    public FGUIController? PageController { get => _pageController; set => _pageController = value; }
+    public bool PageMode
+    {
+        get => _pageMode;
+        set
+        {
+            if (_pageMode == value)
+                return;
+
+            _pageMode = value;
+            if (_pageMode)
+            {
+                _pageWidth = _viewWidth;
+                _pageHeight = _viewHeight;
+            }
+        }
+    }
+    public Controller? PageController { get => _pageController; set => _pageController = value; }
     public bool SnapToItem { get => _snapToItem; set => _snapToItem = value; }
 
     public int CurrentPageX
@@ -140,19 +171,19 @@ public class FGUIScrollPane
     }
 
     // Pull to refresh properties
-    public FGUIComponent? Header { get => _header; set => _header = value; }
-    public FGUIComponent? Footer { get => _footer; set => _footer = value; }
+    public GComponent? Header { get => _header; set => _header = value; }
+    public GComponent? Footer { get => _footer; set => _footer = value; }
 
-    public Event.EventListener OnPullDownRelease => GetOrCreateListener("onPullDownRelease");
-    public Event.EventListener OnPullUpRelease => GetOrCreateListener("onPullUpRelease");
+    public EventListener OnPullDownRelease => GetOrCreateListener("onPullDownRelease");
+    public EventListener OnPullUpRelease => GetOrCreateListener("onPullUpRelease");
 
-    private readonly Dictionary<string, Event.EventListener> _listeners = new();
+    private readonly Dictionary<string, EventListener> _listeners = new();
 
-    private Event.EventListener GetOrCreateListener(string type)
+    private EventListener GetOrCreateListener(string type)
     {
         if (!_listeners.TryGetValue(type, out var listener))
         {
-            listener = new Event.EventListener();
+            listener = new EventListener();
             _listeners[type] = listener;
         }
         return listener;
@@ -177,8 +208,8 @@ public class FGUIScrollPane
             
             float dx = Math.Abs(endX - startX);
             float dy = Math.Abs(endY - startY);
-            float duration = Math.Max(dx, dy) / 500f; // Speed based duration
-            duration = Math.Clamp(duration, 0.1f, 0.5f);
+            float duration = Math.Max(dx, dy) / INERTIA_DURATION_DIVISOR; // Speed based duration
+            duration = Math.Clamp(duration, SCROLL_ANIM_MIN_DURATION, SCROLL_ANIM_MAX_DURATION);
             
             _tweening = true;
             _tweener = GTween.To(new PointF(startX, startY), new PointF(endX, endY), duration)
@@ -323,7 +354,7 @@ public class FGUIScrollPane
     /// 滚动到指定对象可见
     /// </summary>
     /// <param name="obj">目标对象（可以是任何舞台上的对象，不限于此容器的直接子对象）</param>
-    public void ScrollToView(FGUIObject obj)
+    public void ScrollToView(GObject obj)
     {
         ScrollToView(obj, false, false);
     }
@@ -333,7 +364,7 @@ public class FGUIScrollPane
     /// </summary>
     /// <param name="obj">目标对象（可以是任何舞台上的对象，不限于此容器的直接子对象）</param>
     /// <param name="animate">是否使用动画</param>
-    public void ScrollToView(FGUIObject obj, bool animate)
+    public void ScrollToView(GObject obj, bool animate)
     {
         ScrollToView(obj, animate, false);
     }
@@ -344,7 +375,7 @@ public class FGUIScrollPane
     /// <param name="obj">目标对象（可以是任何舞台上的对象，不限于此容器的直接子对象）</param>
     /// <param name="animate">是否使用动画</param>
     /// <param name="setFirst">如果为true，滚动到顶部/左侧；如果为false，滚动到视图中的任意位置</param>
-    public void ScrollToView(FGUIObject obj, bool animate, bool setFirst)
+    public void ScrollToView(GObject obj, bool animate, bool setFirst)
     {
         if (obj == null || Owner == null)
             return;
@@ -401,7 +432,7 @@ public class FGUIScrollPane
     /// </summary>
     /// <param name="obj">对象必须是此容器的直接子对象</param>
     /// <returns>如果对象在视图中可见返回true</returns>
-    public bool IsChildInView(FGUIObject obj)
+    public bool IsChildInView(GObject obj)
     {
         if (obj == null || Owner == null)
             return false;
@@ -477,11 +508,12 @@ public class FGUIScrollPane
         if (_pageMode)
             UpdatePageController();
 
-        // Apply scroll offset to content
+        // 把 FGUI 算出的滚动位置同步到原生面板：
+        // 拖动、松手后的惯性/回弹 tween 都经过这里，从而让 FGUI 物理统一驱动可视滚动，
+        // 内外列表手感一致（原生不再各自产生惯性）。
         if (Owner != null)
         {
-            // The content container should be moved opposite to scroll position
-            // This is typically handled by the native scroll control
+            SCERenderContext.Instance.SyncScrollPaneToNative(Owner);
         }
     }
 
@@ -558,7 +590,13 @@ public class FGUIScrollPane
 
         float dx = x - _lastTouchPos.X;
         float dy = y - _lastTouchPos.Y;
-        
+
+        // 只响应本列表能滚动的轴：竖向列表忽略横向位移，横向列表忽略纵向位移。
+        // 否则竖向列表在纵向拖动时，手指的横向分量会让 X 轴产生过界(maxX=0 时任何 dx 都算过界)，
+        // 表现为不该有的"左右回弹"。
+        if (_scrollType == ScrollType.Vertical) dx = 0;
+        else if (_scrollType == ScrollType.Horizontal) dy = 0;
+
         float now = GetTime();
         float dt = now - _lastTouchTime;
         if (dt > 0)
@@ -578,12 +616,20 @@ public class FGUIScrollPane
         {
             float maxX = Math.Max(0, _contentWidth - _viewWidth);
             float maxY = Math.Max(0, _contentHeight - _viewHeight);
-            
-            if (newX < 0) newX *= PULL_RATIO;
-            else if (newX > maxX) newX = maxX + (newX - maxX) * PULL_RATIO;
-            
-            if (newY < 0) newY *= PULL_RATIO;
-            else if (newY > maxY) newY = maxY + (newY - maxY) * PULL_RATIO;
+            // 过界极限：跟手拖到 视口尺寸×比例 就封顶，不再继续下拉。
+            float limitX = _viewWidth * MAX_OVERSCROLL_RATIO;
+            float limitY = _viewHeight * MAX_OVERSCROLL_RATIO;
+
+            if (newX < 0) newX = Math.Max(newX * PULL_RATIO, -limitX);
+            else if (newX > maxX) newX = Math.Min(maxX + (newX - maxX) * PULL_RATIO, maxX + limitX);
+
+            if (newY < 0) newY = Math.Max(newY * PULL_RATIO, -limitY);
+            else if (newY > maxY) newY = Math.Min(maxY + (newY - maxY) * PULL_RATIO, maxY + limitY);
+        }
+        else
+        {
+            newX = ClampX(newX);
+            newY = ClampY(newY);
         }
         
         _xPos = newX;
@@ -597,6 +643,12 @@ public class FGUIScrollPane
         if (!_dragging) return;
         _dragging = false;
         _isHolding = false;
+
+        // 诊断：松手时的速度/惯性开关，用于定位"惯性很小/没变化"
+        Game.Logger.LogInformation(
+            "[FGUI][Scroll] OnTouchEnd velX={VX} velY={VY} 阈值={Th} inertiaDisabled={Dis} 距离系数={Fac} 时长上限={Dur}",
+            _velocityX, _velocityY, INERTIA_VELOCITY_THRESHOLD, _inertiaDisabled,
+            INERTIA_DISTANCE_FACTOR, SCROLL_ANIM_MAX_DURATION);
 
         // Check for pull to refresh
         // 注意：事件触发不依赖于 _header/_footer 是否存在，用户可能只注册事件
@@ -642,10 +694,10 @@ public class FGUIScrollPane
         }
 
         // Apply inertia
-        if (!_inertiaDisabled && (Math.Abs(_velocityX) > 100 || Math.Abs(_velocityY) > 100))
+        if (!_inertiaDisabled && (Math.Abs(_velocityX) > INERTIA_VELOCITY_THRESHOLD || Math.Abs(_velocityY) > INERTIA_VELOCITY_THRESHOLD))
         {
-            float targetX = _xPos - _velocityX * 0.3f;
-            float targetY = _yPos - _velocityY * 0.3f;
+            float targetX = _xPos - _velocityX * INERTIA_DISTANCE_FACTOR;
+            float targetY = _yPos - _velocityY * INERTIA_DISTANCE_FACTOR;
 
             // Snap to page if in page mode
             if (_pageMode || _snapToItem)
@@ -729,15 +781,36 @@ public class FGUIScrollPane
         }
     }
 
-    private static float GetTime() => (float)(DateTime.UtcNow - DateTime.UnixEpoch).TotalSeconds;
+    // 时间基准：用相对启动时刻的小数值，避免 float 存不下 Unix 秒数(约 17.7 亿)的亚秒精度，
+    // 否则 dt 恒为 0、速度永远不累积、松手没有惯性。
+    private static readonly long _timeBaseMs = Environment.TickCount64;
+    private static float GetTime() => (Environment.TickCount64 - _timeBaseMs) / 1000f;
 
     public void SetContentSize(float width, float height)
     {
         if (_contentWidth != width || _contentHeight != height)
         {
+            var oldOverflowX = Math.Max(0f, _contentWidth - _viewWidth);
+            var oldOverflowY = Math.Max(0f, _contentHeight - _viewHeight);
             _contentWidth = width;
             _contentHeight = height;
             SetPos(_xPos, _yPos, false);
+
+            // Content overflow state can change after data binding (e.g. virtual list NumItems update).
+            // Re-apply native scrollability only when scrollable-state flips, otherwise it can cause
+            // feedback loops in virtual list scroll syncing.
+            if (Owner?.NativeObject != null)
+            {
+                var newOverflowX = Math.Max(0f, _contentWidth - _viewWidth);
+                var newOverflowY = Math.Max(0f, _contentHeight - _viewHeight);
+                const float epsilon = 0.01f;
+                var wasScrollable = oldOverflowX > epsilon || oldOverflowY > epsilon;
+                var nowScrollable = newOverflowX > epsilon || newOverflowY > epsilon;
+                if (wasScrollable != nowScrollable)
+                {
+                    SCERenderContext.Instance.UpdateSize(Owner);
+                }
+            }
         }
     }
 
@@ -747,6 +820,11 @@ public class FGUIScrollPane
         {
             _viewWidth = width;
             _viewHeight = height;
+            if (_pageMode)
+            {
+                _pageWidth = width;
+                _pageHeight = height;
+            }
             SetPos(_xPos, _yPos, false);
         }
     }
@@ -762,11 +840,22 @@ public class FGUIScrollPane
         if (buffer.ReadBool()) buffer.ReadS(); // vScrollBar resource
         if (buffer.ReadBool()) buffer.ReadS(); // hScrollBar resource
 
-        _mouseWheelEnabled = (scrollBarFlags & 4) == 0; // Note: bit 2 means DISABLED
-        _touchEffect = (scrollBarFlags & 8) == 0;
-        _bouncebackEffect = (scrollBarFlags & 16) == 0;
-        _inertiaDisabled = (scrollBarFlags & 32) != 0;
-        _pageMode = (scrollBarFlags & 8) != 0; // bit 3 for page mode
+        // Align with FairyGUI Unity flag semantics:
+        // bit1=snapToItem, bit3=pageMode, bit4/5=touchEffect override, bit6/7=bounceback override, bit8=inertiaDisabled.
+        _snapToItem = (scrollBarFlags & 2) != 0;
+        _pageMode = (scrollBarFlags & 8) != 0;
+
+        if ((scrollBarFlags & 16) != 0)
+            _touchEffect = true;
+        else if ((scrollBarFlags & 32) != 0)
+            _touchEffect = false;
+
+        if ((scrollBarFlags & 64) != 0)
+            _bouncebackEffect = true;
+        else if ((scrollBarFlags & 128) != 0)
+            _bouncebackEffect = false;
+
+        _inertiaDisabled = (scrollBarFlags & 256) != 0;
 
         if (Owner != null)
         {
@@ -789,3 +878,5 @@ public class FGUIScrollPane
     }
 }
 #endif
+
+

@@ -1,21 +1,26 @@
 #if CLIENT
 using System.Drawing;
-using SCEFGUI.Core;
-using SCEFGUI.Utils;
+using FairyGUI;
+using FairyGUI.Utils;
 
-namespace SCEFGUI.UI;
+namespace FairyGUI;
 
-public class FGUILabel : FGUIComponent, IColorGear
+public class GLabel : GComponent, IColorGear
 {
-    protected FGUIObject? _titleObject;
-    protected FGUIObject? _iconObject;
+    protected GObject? _titleObject;
+    protected GObject? _iconObject;
     private string? _title;
     private string? _icon;
 
     public override string? Icon
     {
         get => _icon;
-        set { _icon = value; if (_iconObject != null) _iconObject.Icon = value; }
+        set
+        {
+            _icon = value;
+            if (_iconObject != null)
+                _iconObject.Icon = ResolveIconUrl(value);
+        }
     }
 
     public string? Title
@@ -32,8 +37,8 @@ public class FGUILabel : FGUIComponent, IColorGear
 
     public bool Editable
     {
-        get => (_titleObject as FGUITextInput)?.Editable ?? false;
-        set { if (_titleObject is FGUITextInput input) input.Editable = value; }
+        get => (_titleObject as GTextInput)?.Editable ?? false;
+        set { if (_titleObject is GTextInput input) input.Editable = value; }
     }
 
     public Color TitleColor
@@ -54,11 +59,11 @@ public class FGUILabel : FGUIComponent, IColorGear
         set => TitleColor = value;
     }
 
-    public FGUITextField? GetTextField()
+    public GTextField? GetTextField()
     {
-        if (_titleObject is FGUITextField tf) return tf;
-        if (_titleObject is FGUILabel label) return label.GetTextField();
-        if (_titleObject is FGUIButton btn) return btn.GetTextField();
+        if (_titleObject is GTextField tf) return tf;
+        if (_titleObject is GLabel label) return label.GetTextField();
+        if (_titleObject is GButton btn) return btn.GetTextField();
         return null;
     }
 
@@ -71,7 +76,7 @@ public class FGUILabel : FGUIComponent, IColorGear
         if (_titleObject != null && !string.IsNullOrEmpty(_title))
             _titleObject.Text = _title;
         if (_iconObject != null && !string.IsNullOrEmpty(_icon))
-            _iconObject.Icon = _icon;
+            _iconObject.Icon = ResolveIconUrl(_icon);
     }
 
     public override void Setup_AfterAdd(ByteBuffer buffer, int beginPos)
@@ -98,7 +103,7 @@ public class FGUILabel : FGUIComponent, IColorGear
 
         if (buffer.ReadBool())
         {
-            var input = GetTextField() as FGUITextInput;
+            var input = GetTextField() as GTextInput;
             if (input != null)
             {
                 str = buffer.ReadS();
@@ -114,5 +119,38 @@ public class FGUILabel : FGUIComponent, IColorGear
                 buffer.Skip(13);
         }
     }
+
+    private string? ResolveIconUrl(string? rawIcon)
+    {
+        if (string.IsNullOrWhiteSpace(rawIcon))
+            return rawIcon;
+
+        if (rawIcon.StartsWith(UIPackage.URL_PREFIX, StringComparison.OrdinalIgnoreCase))
+            return rawIcon;
+
+        var owner = PackageItem?.Owner;
+        if (owner?.Name == null)
+            return rawIcon;
+
+        var iconKey = rawIcon.Trim();
+        var item = owner.GetItemByName(iconKey) ?? owner.GetItem(iconKey);
+        if (item == null)
+        {
+            item = owner.GetItems().FirstOrDefault(x =>
+                !string.IsNullOrWhiteSpace(x.Name) &&
+                (x.Name.Equals(iconKey, StringComparison.OrdinalIgnoreCase) ||
+                 x.Name.EndsWith("/" + iconKey, StringComparison.OrdinalIgnoreCase) ||
+                 x.Name.EndsWith(iconKey, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        if (item == null || string.IsNullOrWhiteSpace(item.Id) || string.IsNullOrWhiteSpace(owner.Id))
+        {
+            Game.Logger.LogWarning("[FGUI][Icon] label icon unresolved raw={Raw} owner={Owner}", iconKey, owner.Name);
+            return rawIcon;
+        }
+
+        return UIPackage.URL_PREFIX + owner.Id + item.Id;
+    }
 }
 #endif
+

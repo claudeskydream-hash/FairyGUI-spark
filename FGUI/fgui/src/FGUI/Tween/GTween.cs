@@ -1,8 +1,8 @@
 #if CLIENT
 using System.Drawing;
-using SCEFGUI.Core;
+using FairyGUI;
 
-namespace SCEFGUI.Tween;
+namespace FairyGUI;
 
 public static class EaseManager
 {
@@ -374,3 +374,4 @@ public static class GTween
     }
 }
 #endif
+
