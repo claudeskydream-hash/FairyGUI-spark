@@ -20,25 +20,29 @@ public class UBBParser
 
     public UBBParser()
     {
+        // UBB 标签 → 引擎内联标记(引擎 Label 文本渲染可解析 <u> 等)。
+        // 引擎实际支持哪些标记需实测:不支持的会原样显示 <tag>,届时把对应 handler 改回返回 "" 剥掉即可。
+        _handlers["b"] = (tagName, value) => "<b>";
+        _handlers["/b"] = (tagName, value) => "</b>";
+        _handlers["i"] = (tagName, value) => "<i>";
+        _handlers["/i"] = (tagName, value) => "</i>";
+        _handlers["u"] = (tagName, value) => "<u>";
+        _handlers["/u"] = (tagName, value) => "</u>";
+        _handlers["color"] = (tagName, value) => $"<color={value}>";
+        _handlers["/color"] = (tagName, value) => "</color>";
+        // size:引擎无内联字号能力(实测 <size=..> 和 <font size=..> 都吐原文),剥掉;字号只能用字段级 FontSize。
+        _handlers["size"] = (tagName, value) => "";
+        _handlers["/size"] = (tagName, value) => "";
+        // 以下引擎不支持对应内联标记,剥掉(仅去标签,保留其间文字),避免露出 <tag> 原文:
         _handlers["url"] = (tagName, value) => "";
         _handlers["/url"] = (tagName, value) => "";
         _handlers["img"] = (tagName, value) => "";
-        _handlers["b"] = (tagName, value) => "";
-        _handlers["/b"] = (tagName, value) => "";
-        _handlers["i"] = (tagName, value) => "";
-        _handlers["/i"] = (tagName, value) => "";
-        _handlers["u"] = (tagName, value) => "";
-        _handlers["/u"] = (tagName, value) => "";
         _handlers["sup"] = (tagName, value) => "";
         _handlers["/sup"] = (tagName, value) => "";
         _handlers["sub"] = (tagName, value) => "";
         _handlers["/sub"] = (tagName, value) => "";
-        _handlers["color"] = (tagName, value) => "";
-        _handlers["/color"] = (tagName, value) => "";
         _handlers["font"] = (tagName, value) => "";
         _handlers["/font"] = (tagName, value) => "";
-        _handlers["size"] = (tagName, value) => "";
-        _handlers["/size"] = (tagName, value) => "";
     }
 
     public void SetHandler(string tagName, Func<string, string, string> handler)
@@ -139,11 +143,12 @@ public class UBBParser
 
             result.Append(text.Substring(pos, start - pos));
 
-            if (remove)
+            if (!remove)
             {
-                // Just remove tags
+                // 透传 <...> 标签原样给引擎(引擎 Label 可解析部分内联标记)
+                result.Append(text.Substring(start, end - start + 1));
             }
-            // Keep the tag as is for now, SCE might handle some HTML
+            // remove=true 时丢弃标签(纯文本)
 
             pos = end + 1;
         }

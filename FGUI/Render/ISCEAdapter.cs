@@ -59,7 +59,16 @@ public interface ISCEAdapter
     void SetItalic(object control, bool italic);
     void SetTextAlign(object control, TextAlign align);
     void SetTextVerticalAlign(object control, TextVerticalAlign align);
-    
+    /// <summary>设置文字描边（size&lt;=0 表示关闭）。</summary>
+    void SetTextStroke(object control, Color color, float size);
+    /// <summary>设置文字阴影（offset 为像素偏移，Transparent/零偏移表示关闭）。</summary>
+    void SetTextShadow(object control, Color color, PointF offset);
+    /// <summary>
+    /// 设置单行下划线（enabled=false 关闭）。引擎 Label 无原生下划线，用一个覆盖 Canvas 量测文字宽度后画线实现。
+    /// width/height 为文本域尺寸，用于按水平/垂直对齐定位下划线；仅保证单行文本。
+    /// </summary>
+    void SetTextUnderline(object control, bool enabled, float width, float height);
+
     // 输入框相关
     void SetInputPlaceholder(object control, string placeholder);
     void SetInputPassword(object control, bool isPassword);

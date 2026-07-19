@@ -10,9 +10,6 @@ namespace FairyGUI;
 public class GTextField : GObject
 {
     // 静态标志：记录哪些警告已经显示过（避免重复警告）
-    private static bool _warnedStroke = false;
-    private static bool _warnedShadow = false;
-    private static bool _warnedUnderline = false;
     private static bool _warnedLeading = false;
     
     protected string _text = "";
@@ -171,7 +168,7 @@ public class GTextField : GObject
         _italic = buffer.ReadBool();
         _bold = buffer.ReadBool();
         _singleLine = buffer.ReadBool();
-        if (buffer.ReadBool()) { _strokeColor = buffer.ReadColor(); buffer.ReadFloat(); }
+        if (buffer.ReadBool()) { _strokeColor = buffer.ReadColor(); _strokeSize = (int)buffer.ReadFloat(); }
         if (buffer.ReadBool()) { _shadowColor = buffer.ReadColor(); _shadowOffset = new PointF(buffer.ReadFloat(), buffer.ReadFloat()); }
         if (buffer.ReadBool()) buffer.ReadS();
     }
@@ -211,23 +208,17 @@ public class GTextField : GObject
             displayText = ParseTemplate(displayText);
         }
         
-        // 处理UBB标签
+        // 处理 UBB 标签：转成引擎内联标记([u]→<u>、[color=..]→<color=..> 等)交给引擎渲染，
+        // 不再剥成纯文本。引擎不支持的标记会原样显示，届时在 UBBParser 里把对应 handler 改回剥离。
         if (_ubbEnabled && !string.IsNullOrEmpty(displayText))
         {
-            // 解析UBB标签提取样式信息
-            var elements = RichTextParser.Parse(displayText, _color, _fontSize);
-            
-            if (elements.Count > 0)
-            {
-                // 对于不支持富文本的控件，提取第一个元素的样式
-                var first = elements[0];
-                if (!first.Bold && elements.Any(e => e.Bold)) _bold = true;
-                if (!first.Italic && elements.Any(e => e.Italic)) _italic = true;
-                
-                // 转换为纯文本显示
-                displayText = UBBParser.ToPlainText(displayText);
-            }
+            displayText = UBBParser.Instance.Parse(displayText);
         }
+
+        // 下划线（主方案）：引擎 Label 文本渲染支持内联标记 <u>，包一层即得原生下划线（贴合文字宽度）。
+        // 备用方案是覆盖 Canvas 手绘（见 adapter.SetTextUnderline），当前不启用。
+        if (_underline && !string.IsNullOrEmpty(displayText))
+            displayText = $"<u>{displayText}</u>";
 
         // 设置文本内容
         adapter.SetText(NativeObject, displayText);
@@ -269,22 +260,23 @@ public class GTextField : GObject
         };
         adapter.SetTextVerticalAlign(NativeObject, vertAlign);
 
-        // 记录不支持的特性（每种警告只记录一次，避免日志冗余）
-        if (_strokeColor.HasValue && !_warnedStroke)
-        {
-            Game.Logger.LogWarning("[FGUI] TextField stroke not supported in SCE (this warning will only show once)");
-            _warnedStroke = true;
-        }
-        if (_shadowColor.HasValue && !_warnedShadow)
-        {
-            Game.Logger.LogWarning("[FGUI] TextField shadow not supported in SCE (this warning will only show once)");
-            _warnedShadow = true;
-        }
-        if (_underline && !_warnedUnderline)
-        {
-            Game.Logger.LogWarning("[FGUI] TextField underline not supported in SCE (this warning will only show once)");
-            _warnedUnderline = true;
-        }
+        // 描边：引擎原生支持，直接套用（无描边时显式清零，避免控件复用残留）
+        if (_strokeColor.HasValue)
+            adapter.SetTextStroke(NativeObject, _strokeColor.Value, _strokeSize);
+        else
+            adapter.SetTextStroke(NativeObject, System.Drawing.Color.Transparent, 0);
+
+        // 阴影：引擎原生支持，直接套用（无阴影时清零）
+        if (_shadowColor.HasValue)
+            adapter.SetTextShadow(NativeObject, _shadowColor.Value, _shadowOffset);
+        else
+            adapter.SetTextShadow(NativeObject, System.Drawing.Color.Transparent, default);
+
+        // 下划线备用方案（覆盖 Canvas 手绘）：当前用 <u> 内联标记，故此处传 false 关闭覆盖层。
+        // 若哪天 <u> 的层级/位置不满足需求，把上面 <u> 包裹去掉、这里改回传 _underline 即可切换。
+        adapter.SetTextUnderline(NativeObject, false, Width, Height);
+
+        // 记录暂不支持的特性（每种警告只记录一次，避免日志冗余）
         if ((_leading != 0 || _letterSpacing != 0) && !_warnedLeading)
         {
             var preview = displayText.Length > 32 ? $"{displayText[..32]}..." : displayText;

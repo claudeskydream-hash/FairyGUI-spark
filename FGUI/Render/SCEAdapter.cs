@@ -264,6 +264,8 @@ public class SCEAdapter : ISCEAdapter
 
         c.Position(x, y);
         TrackControlPosition(control, x, y);
+        if (c is Label lblP && _underlineOverlays.ContainsKey(lblP))
+            SyncUnderlineOverlay(c);
     }
 
     public void SetScrollOverscroll(object control, float dx, float dy)
@@ -305,6 +307,9 @@ public class SCEAdapter : ISCEAdapter
             c.Size(safeWidth, safeHeight);
             TrackControlSize(control, safeWidth, safeHeight);
             _baseControlSizes[control] = new SizeF(safeWidth, safeHeight);
+
+            if (c is Label lblS && _underlineOverlays.ContainsKey(lblS))
+                SyncUnderlineOverlay(c);
 
             // 有裁剪外壳：外壳与面板同尺寸，才能恰好裁在视口边界上。
             if (_scrollClipHost.TryGetValue(control, out var host))
@@ -1029,6 +1034,149 @@ public class SCEAdapter : ISCEAdapter
             input.TextColor = color;
         else if (control is Label label)
             label.TextColor = color;
+    }
+
+    public void SetTextStroke(object control, Color color, float size)
+    {
+        // 引擎原生描边：描边由 Label 在自身文字栅格化时一并产出，无额外 Label/绘制开销
+        if (control is Label label)
+        {
+            label.StrokeSize = size > 0 ? size : 0;
+            label.StrokeColor = color;
+        }
+    }
+
+    public void SetTextShadow(object control, Color color, PointF offset)
+    {
+        // 引擎原生阴影：同上，零额外开销
+        if (control is Label label)
+        {
+            label.ShadowColor = color;
+            label.ShadowOffset = new System.Numerics.Vector2(offset.X, offset.Y);
+        }
+    }
+
+    /// <summary>下划线覆盖层状态：一个挂在 Label 下的 Canvas + 尺寸 + 量测缓存。</summary>
+    private sealed class UnderlineState
+    {
+        public Canvas Overlay = null!;
+        public float Width;
+        public float Height;
+        // 覆盖层作为“兄弟”挂在 Label 的父容器下（Label 本身不渲染子级）
+        public bool Attached;
+        public Control? AttachedParent;
+        // 上次绘制签名：内容/尺寸/字号未变则不重画（立即模式绘制会持久保留），避免每帧累积
+        public string? LastDrawnText;
+        public int LastDrawnFontSize;
+        public float LastDrawnWidth;
+        public float LastDrawnHeight;
+    }
+
+    private readonly Dictionary<Label, UnderlineState> _underlineOverlays = new();
+
+    public void SetTextUnderline(object control, bool enabled, float width, float height)
+    {
+        if (control is not Label label)
+            return;
+
+        if (!enabled)
+        {
+            // 关闭：隐藏覆盖层（保留实例以便复用）
+            if (_underlineOverlays.TryGetValue(label, out var off))
+                off.Overlay.Visible = false;
+            return;
+        }
+
+        if (!_underlineOverlays.TryGetValue(label, out var st))
+        {
+            // 按需创建覆盖层：透明、不拦截指针。注意：Label 不渲染子级，故不能挂在 Label 里，
+            // 必须作为兄弟挂到 Label 的父容器（Panel/Component）下，见 SyncUnderlineOverlay。
+            var c = new Canvas();
+            c.Background(Color.Transparent);
+            c.AlignTop().AlignLeft();
+            st = new UnderlineState { Overlay = c };
+            _underlineOverlays[label] = st;
+            c.OnRender += (_, _) => DrawUnderline(label, st);
+        }
+
+        st.Width = width;
+        st.Height = height;
+        st.Overlay.Visible = true;
+        SyncUnderlineOverlay(label);
+    }
+
+    /// <summary>把下划线覆盖层同步到 Label 的父容器下，并对齐 Label 的位置/尺寸/层级。</summary>
+    private void SyncUnderlineOverlay(Control label)
+    {
+        if (label is not Label lbl || !_underlineOverlays.TryGetValue(lbl, out var st))
+            return;
+        if (!_attachedParentByChild.TryGetValue(label, out var parentObj) || parentObj is not Control parent)
+            return; // Label 尚未挂到父级，等 AddChild 时再同步
+
+        var overlay = st.Overlay;
+        if (!st.Attached || !ReferenceEquals(st.AttachedParent, parent))
+        {
+            overlay.RemoveFromParent();
+            parent.Add(overlay);
+            overlay.ZIndex(30000); // 压在文字之上
+            st.Attached = true;
+            st.AttachedParent = parent;
+        }
+
+        // 与 Label 同父坐标系：位置取 Label 跟踪位置，尺寸取本次传入尺寸
+        var pos = _controlPositions.TryGetValue(label, out var p) ? p : new PointF(0f, 0f);
+        overlay.Position(pos.X, pos.Y);
+        overlay.Size(st.Width, st.Height);
+
+        // 透明自绘 Canvas 的 OnRender 不触发，改为立即模式：挂好后直接画（内部有变化守卫，不会每帧重画）
+        DrawUnderline(lbl, st);
+    }
+
+    private void DrawUnderline(Label label, UnderlineState st)
+    {
+        var canvas = st.Overlay;
+        var txt = label.Text;
+        float w = st.Width, h = st.Height;
+        int fs = (int)MathF.Round(label.FontSize);
+        if (fs <= 0) fs = 12;
+
+        // 空文字：清掉可能残留的线
+        if (string.IsNullOrEmpty(txt))
+        {
+            if (st.LastDrawnText != null)
+            {
+                canvas.ResetState();
+                st.LastDrawnText = null;
+            }
+            return;
+        }
+
+        // 变化守卫：内容/字号/尺寸都没变则不重画（立即模式绘制会持久保留），避免每帧累积
+        if (st.LastDrawnText == txt && st.LastDrawnFontSize == fs &&
+            st.LastDrawnWidth == w && st.LastDrawnHeight == h)
+            return;
+
+        // 说明：本适配下 Canvas 的 OnRender 不触发、MeasureText 在 OnRender 外返回不可靠，
+        // 故按“整宽”画下划线。对 autoSize 的文本域（域宽≈文字宽）即为正确的文字下划线。
+        // 垂直位置：单行，按垂直对齐取所在行，线画在行底附近。
+        float lineH = fs;
+        float yTop = label.VerticalContentAlignment switch
+        {
+            VerticalContentAlignment.Center => (h - lineH) / 2f,
+            VerticalContentAlignment.Bottom => h - lineH,
+            _ => 0f
+        };
+        float y = yTop + lineH * 0.95f;
+
+        canvas.ResetState(); // 先清除上一条线，避免立即模式下累积
+        canvas.StrokeWidth = MathF.Max(1f, fs / 16f);
+        canvas.StrokePaint = label.TextColor;
+        canvas.DrawLine(0f, y, w, y);
+
+        st.LastDrawnText = txt;
+        st.LastDrawnFontSize = fs;
+        st.LastDrawnWidth = w;
+        st.LastDrawnHeight = h;
     }
 
     public void SetFontSize(object control, int size)
@@ -2497,6 +2645,10 @@ public class SCEAdapter : ISCEAdapter
             }
 
             _attachedParentByChild[trackKey] = parent;
+
+            // Label 刚挂到父级：把它的下划线覆盖层作为兄弟同步进同一个父级
+            if (c is Label lblA && _underlineOverlays.ContainsKey(lblA))
+                SyncUnderlineOverlay(c);
         }
     }
 
