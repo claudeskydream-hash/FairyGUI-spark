@@ -1,222 +1,147 @@
-# FairyGUI for 星火编辑器 (Spark Editor)
+# FairyGUI for 星火编辑器 (Spark / WasiCore)
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-9.0-purple.svg)](https://dotnet.microsoft.com/)
 
-> 将 [FairyGUI](https://www.fairygui.com/) UI框架适配到星火编辑器（Spark Editor）的完整实现
+> 把 [FairyGUI](https://www.fairygui.com/) 运行时移植到星火编辑器（Spark / WasiCore SDK）的 **C# 共享源码库**。
 
 ## 📖 项目简介
 
-本项目是 FairyGUI UI框架在星火编辑器（Spark Editor）平台上的完整适配实现。FairyGUI 是一个专业的 UI 编辑器，支持可视化编辑 UI 界面，并导出为跨平台的 UI 资源。本项目将 FairyGUI 的核心功能移植到星火编辑器的 WasiCore 框架中，让开发者可以在星火编辑器中使用 FairyGUI 创建和管理 UI 界面。
+本仓库是 FairyGUI UI 框架**运行时**在星火编辑器（WasiCore）平台上的 C# 移植实现。它把 FairyGUI 编辑器导出的 UI 包（Package）在星火运行时中解析、创建并渲染出来，让你可以在星火项目里用 FairyGUI 搭建和驱动界面。
 
-### ✨ 核心特性
+**它是一个「源码库」，不是可独立运行的游戏工程。** 仓库只包含 FGUI 运行时源码与示例，本身没有 `.csproj` / 场景 / 资源。使用方式是被**多个星火游戏项目共同引用**——各项目通过 MSBuild `<Compile Include>` 把这里的源码编进自己的工程,从而多项目复用同一份 FGUI、集中维护。
 
-- ✅ **完整的 UI 组件支持** - Button、Label、Image、List、ScrollPane、Window 等
-- ✅ **屏幕自适应** - 支持设计分辨率适配，自动缩放到不同屏幕尺寸
-- ✅ **拖拽功能** - 完整的拖拽（Drag & Drop）支持
-- ✅ **事件系统** - 完整的事件分发和处理机制
-- ✅ **资源管理** - 支持 FairyGUI 包（Package）和资源加载
-- ✅ **控制器系统** - 支持 FairyGUI 的 Controller 状态切换
-- ✅ **关系系统** - 支持 UI 元素之间的关联关系
-- ✅ **示例代码** - 包含多个完整的示例 Demo
+> 若你在找「克隆后直接 `dotnet build` 就能跑的 Demo 工程」——本仓库已不再提供；它现在是纯库。示例代码见 `FGUI/Samples/`。
 
-## 🚀 快速开始
+## ✨ 核心特性
 
-### 前置要求
+- ✅ **完整的 UI 组件** —— Button、Label、Image、List、ScrollPane、Component/Window、Loader 等
+- ✅ **屏幕自适应** —— 设计分辨率适配,自动缩放到不同屏幕尺寸(内置横屏 1136×640 / 竖屏 640×1136)
+- ✅ **Controller 控制器** —— FairyGUI 页面/状态切换
+- ✅ **Relation 关系系统** —— UI 元素间的关联布局
+- ✅ **Transition 动画 / Tween 补间**
+- ✅ **拖拽（Drag & Drop）** —— 含 DragDropManager 拖拽代理
+- ✅ **事件系统** —— 完整的事件分发（Click / Drag / Drop 等）
+- ✅ **资源加载适配** —— 通过 `ISCEAdapter` 对接星火资源/渲染
+- ✅ **示例代码** —— Basics / Bag / VirtualList 三个完整 Demo
 
-- 星火编辑器（Spark Editor）v2.0+
-- .NET 9.0 SDK
-- Visual Studio 2022 或 Rider
+## 📁 仓库结构
 
-### 安装步骤
+```
+FairyGUI-spark/
+├── LICENSE
+├── README.md
+└── FGUI/                    # ← 库本体(命名空间主要为 FairyGUI)
+    ├── FGUIManager.cs       # 库入口 / 初始化
+    ├── Core/                # 核心:FGUIObject、Package、PackageItem…
+    ├── UI/                  # UI 组件:Button/Label/Image/List/ScrollPane/Component…
+    ├── Gears/               # Gear(控制器驱动的属性联动)
+    ├── Event/               # 事件分发
+    ├── Tween/               # GTween 补间
+    ├── Utils/               # ByteBuffer、XML、UBB、字体映射…
+    ├── Render/              # 渲染适配层:ISCEAdapter / SCEAdapter / SCERenderContext
+    ├── SCE/                 # 星火运行时对接
+    ├── Client/              # 星火接入层(IGameClass 引导 + 资源加载,#if CLIENT)
+    └── Samples/             # 示例 Demo(Basics / Bag / VirtualList)
+```
 
-1. **克隆项目**
-   ```bash
-   git clone https://github.com/your-username/FairyGUI-spark.git
-   cd FairyGUI-spark/fgui
-   ```
+> 说明:命名空间以 `FairyGUI`（及 `FairyGUI.Render`、`FairyGUI.Utils`、`FairyGUI.Gears`）为主；星火接入层 `FGUI/Client/**` 位于 `GameEntry` 命名空间并以 `#if CLIENT` 包裹（UI 是客户端逻辑）。
 
-2. **配置指引**
-   
+## 🚀 在星火项目中接入
 
-3. **准备 UI 资源**
-   
-   将 FairyGUI 编辑器导出的 `.bytes` 文件放到 `星火编辑器/version-2000/AppBundle/ui` 目录下。
+FGUI 是客户端代码,把它编进你项目的**客户端配置**即可。推荐通过 junction/环境变量引用,保持源码单一真源、多项目共用。
 
-4. **编译项目**
-   ```bash
-   dotnet build src/GameEntry.csproj -c Client-Debug
-   ```
+**1. 让项目能定位到本仓库**（二选一）
 
-### 基本使用
+- Junction（推荐,免提权,路径稳定）：在你的项目根建一个 junction 指到本仓库,例如
+  ```powershell
+  New-Item -ItemType Junction -Path tools\FairyGUI-spark -Target D:\path\to\FairyGUI-spark
+  ```
+- 或设环境变量 `FGUI_SHARED_SRC_PATH` 指向本仓库的 `FGUI` 目录。
+
+**2. 在 `.csproj` 里引入源码**（排除 Samples）
+
+```xml
+<PropertyGroup>
+  <FGUISharedSrcPath Condition="'$(FGUI_SHARED_SRC_PATH)' != ''">$(FGUI_SHARED_SRC_PATH)</FGUISharedSrcPath>
+  <FGUISharedSrcPath Condition="'$(FGUI_SHARED_SRC_PATH)' == ''">$(MSBuildProjectDirectory)\..\tools\FairyGUI-spark\FGUI</FGUISharedSrcPath>
+</PropertyGroup>
+
+<ItemGroup>
+  <Compile Include="$(FGUISharedSrcPath)\**\*.cs"
+           Exclude="$(FGUISharedSrcPath)\Samples\**\*.cs"
+           LinkBase="FGUI" />
+</ItemGroup>
+```
+
+> 注意:若把源码放在项目默认编译目录（如 `src/`）下,会与 SDK 默认 glob 冲突产生「重复 Compile」——请让引用路径落在默认编译根之外（如项目根的 `tools/`）。`LinkBase="FGUI"` 只影响 IDE 里的虚拟归类。
+
+**3. 初始化并使用**
+
+`FGUI/Client/FGUIBootstrapClientSys.cs` 是一个 `IGameClass`,会被星火自动发现,在 `MapGameMode` 的 `EventGameStart` 里引导 FGUI。它是最完整的接入范例,可直接参考或替换成你自己的引导逻辑。核心只有一步初始化:
 
 ```csharp
 #if CLIENT
-using SCEFGUI;
-using SCEFGUI.Render;
-using SCEFGUI.UI;
+using FairyGUI;
+using FairyGUI.Render;
 
-// 1. 初始化 FGUI（在游戏启动时调用一次）
-var adapter = new SCEAdapter();
-FGUIManager.Initialize(adapter, designWidth: 1136, designHeight: 640);
-
-// 2. 将 FGUIRoot 添加到舞台
-FGUIRoot.Instance.AddToStage();
-
-// 3. 加载 UI 包
-FGUIManager.AddPackage("ui/Basics", (name, ext) => {
-    string path = $"res/ui/{name}{ext}";
-    return File.Exists(path) ? File.ReadAllBytes(path) : null;
-});
-
-// 4. 创建 UI 组件
-var mainView = FGUIManager.CreateObject("Basics", "Main") as FGUIComponent;
-if (mainView != null)
-{
-    mainView.SetXY(0, 0);
-    FGUIRoot.Instance.AddChild(mainView);
-}
+// 游戏启动时初始化一次(横屏 1136×640;竖屏传 640×1136)
+FGUIManager.Initialize(new SCEAdapter(), designWidth: 1136, designHeight: 640);
 #endif
 ```
 
-## 📁 项目结构
+之后加载 UI 包、创建组件、绑定事件的完整用法,见 `FGUI/Client/FGUIBootstrapClientSys.cs` 与 `FGUI/Samples/`。
 
-```
-fgui/
-├── src/
-│   └── FGUI/
-│       ├── Core/              # 核心类
-│       │   ├── FGUIObject.cs  # UI对象基类
-│       │   ├── FGUIPackage.cs # 包管理
-│       │   └── ...
-│       ├── UI/                # UI组件
-│       │   ├── FGUIButton.cs
-│       │   ├── FGUIComponent.cs
-│       │   ├── FGUITextField.cs
-│       │   └── ...
-│       ├── Render/            # 渲染适配层
-│       │   ├── SCEAdapter.cs  # 星火编辑器适配器
-│       │   └── SCERenderContext.cs
-│       ├── Event/             # 事件系统
-│       ├── Samples/           # 示例代码
-│       │   ├── Basics/        # 基础示例
-│       │   ├── Bag/           # 背包示例
-│       │   └── VirtualList/  # 虚拟列表示例
-│       └── FGUIManager.cs     # 管理器入口
-├── res/
-│   └── ui/                    # UI资源文件（.bytes）
-└── README.md
-```
+## 📝 示例（Samples）
 
-## 🎯 功能特性详解
+`FGUI/Samples/` 下三个 Demo（**编译时被 `Exclude` 排除,仅作参考,不进你的产物**）：
 
-### 屏幕适配
-
-支持设计分辨率自动适配，默认设计分辨率为 1136x640：
-
-```csharp
-// 设置设计分辨率和适配模式
-FGUIManager.SetContentScaleFactor(
-    designResolutionX: 1136,
-    designResolutionY: 640,
-    matchMode: ScreenMatchMode.MatchWidthOrHeight  // 或 MatchWidth / MatchHeight
-);
-```
-
-### 拖拽功能
-
-支持完整的拖拽操作：
-
-```csharp
-// 方式1：直接设置 Draggable
-var button = obj.GetChild("dragButton") as FGUIButton;
-button.Draggable = true;
-
-// 方式2：使用 DragDropManager（带拖拽代理）
-button.OnDragStart.Add(ctx => {
-    ctx.PreventDefault();
-    DragDropManager.StartDrag(button, ctx.Data, button.Icon);
-});
-```
-
-### 事件处理
-
-```csharp
-// 点击事件
-button.OnClick.Add(ctx => {
-    Game.Logger.LogInformation("Button clicked!");
-});
-
-// 拖拽事件
-obj.OnDragStart.Add(ctx => { /* 拖拽开始 */ });
-obj.OnDragMove.Add(ctx => { /* 拖拽中 */ });
-obj.OnDragEnd.Add(ctx => { /* 拖拽结束 */ });
-obj.OnDrop.Add(ctx => { /* 放置 */ });
-```
-
-## 📝 示例代码
-
-项目包含多个完整的示例：
-
-- **Basics** - 基础组件演示（Button、Text、Image、List 等）
-- **Bag** - 背包系统示例
-- **VirtualList** - 虚拟列表示例（大数据量优化）
-
-查看 `src/FGUI/Samples/` 目录获取更多示例代码。
+- **Basics** —— 基础组件演示（Button、Text、Image、List 等）
+- **Bag** —— 背包系统示例
+- **VirtualList** —— 虚拟列表（大数据量优化）
 
 ## ⚠️ 已知限制
 
-由于星火编辑器平台的限制，以下 FairyGUI 特性暂不支持：
+受星火平台限制,以下 FairyGUI 文本特性暂不支持(命中时日志会告警,每种只提示一次):
 
 - ❌ 文字描边（Stroke）
 - ❌ 文字阴影（Shadow）
 - ❌ 文字下划线（Underline）
-- ❌ 行间距/字间距（Leading/LetterSpacing）
+- ❌ 行间距 / 字间距（Leading / LetterSpacing）
 - ❌ 部分动画效果
-
-这些限制会在日志中显示警告信息（每种警告只显示一次）。
 
 ## 🔧 开发指南
 
-### 添加新的 UI 组件
+**新增 UI 组件**
 
-1. 在 `src/FGUI/UI/` 目录下创建新的组件类
-2. 继承 `FGUIObject` 或 `FGUIComponent`
-3. 在 `FGUIObjectFactory.cs` 中注册组件类型
-4. 在 `SCERenderContext.cs` 中添加渲染逻辑
+1. 在 `FGUI/UI/` 下创建组件类,继承 `FGUIObject` 或 `FGUIComponent`
+2. 在 `FGUI/Core/FGUIObjectFactory.cs` 注册组件类型
+3. 在 `FGUI/Render/SCERenderContext.cs` 补渲染逻辑
 
-### 调试技巧
+**调试**
 
-- 查看日志：`logs/lua/wasm-default-*.log`
-- 搜索 FGUI 相关日志：`grep "\[FGUI\]" logs/lua/wasm-default-*.log`
-- 启用详细日志：在代码中使用 `Game.Logger.LogInformation()`
+- 运行时日志集中在星火安装根的 `logs/`（客户端日志在 `logs/client`）
+- 过滤 FGUI 日志:搜索 `[FGUI]`
 
-## 🤝 贡献指南
+**约定**（贴合星火 WasiCore 规则）
 
-欢迎提交 Issue 和 Pull Request！
+- UI 代码用 `#if CLIENT` 包裹;禁用 `Task.Run`/`Thread`,延时用 `Game.Delay()`
+- 日志用参数化模板:`Game.Logger.LogInformation("... {Id}", id)`
 
-1. Fork 本项目
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
+## 🤝 贡献
+
+欢迎 Issue / PR。改动 FGUI 直接在本仓库源码上进行,提交后各引用方重新编译即可获得更新。
 
 ## 📄 许可证
 
-本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
+MIT,详见 [LICENSE](LICENSE)。
 
 ## 🙏 致谢
 
-- [FairyGUI](https://www.fairygui.com/) - 优秀的 UI 编辑器框架
-- 星火编辑器团队 - 提供强大的游戏开发平台
-- 点点大佬提供了适配的基础代码
-
-## 📞 联系方式
-
-如有问题或建议，请通过以下方式联系：
-
-- 提交 [Issue](https://github.com/CX-MAN/FairyGUI-spark/issues)
+- [FairyGUI](https://www.fairygui.com/) —— 优秀的 UI 编辑器与框架
+- 星火编辑器团队 —— 提供游戏开发平台
+- 点点大佬 —— 提供了适配的基础代码
 
 ---
 
-**⭐ 如果这个项目对你有帮助，请给个 Star！**
+**⭐ 如果这个库对你有帮助,欢迎 Star！**
