@@ -1533,7 +1533,11 @@ public class GList : GComponent
 
             if (buffer.ReadBool())
             {
-                buffer.Skip(8); // clipSoftness
+                // clipSoftness：裁剪边缘羽化像素(Vector2，两个 int)。原生无软裁剪，交给
+                // GComponent.UpdateClipSoftness 用逐项 Alpha 渐隐近似(见 ScrollPane.SetClipSoftness)。
+                int clipSoftnessX = buffer.ReadInt();
+                int clipSoftnessY = buffer.ReadInt();
+                _scrollPane?.SetClipSoftness(clipSoftnessX, clipSoftnessY);
             }
 
             if (buffer.Version >= 2)

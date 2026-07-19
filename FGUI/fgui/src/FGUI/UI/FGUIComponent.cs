@@ -17,6 +17,9 @@ public class GComponent : GObject
     protected RectangleF? _clipRect;
     protected OverflowType _overflow = OverflowType.Visible;
     protected Margin _margin;
+    // clipSoftness 是显示层效果，不能破坏列表项（或动画）原有的 Alpha。缓存每项的基础 Alpha 与上次应用的系数，
+    // 便于关闭羽化/项目离开列表时无损恢复，也避免每帧重复写入原生控件。
+    private readonly Dictionary<GObject, (float BaseAlpha, float Factor)> _clipSoftnessAlphaStates = new();
     private bool _isDisposing;
     internal int BuildingDisplayList;
     internal Controller? _applyingController;
@@ -30,6 +33,106 @@ public class GComponent : GObject
     public GObject? MaskObject { get; private set; }
     /// <summary>是否反向遮罩。</summary>
     public bool MaskInverted { get; private set; }
+
+    /// <summary>
+    /// 裁剪边缘羽化(近似 FGUI clipSoftness)。原生无软裁剪能力，这里按各子对象中心到视口边缘的距离，
+    /// 在 softness 像素带内把子对象 Alpha 从 1 线性渐隐到 0——任意背景下都是真 alpha 渐隐(选型 B)。
+    /// 由 <see cref="ScrollPane.UpdateScrollPosition"/> 在每次滚动时调用；无 softness 时不会进来。
+    /// 原生不支持逐像素软裁剪，因此按项的中心位置近似；项目自身的基础 Alpha 会与羽化系数相乘。
+    /// </summary>
+    internal void UpdateClipSoftness()
+    {
+        var pane = _scrollPane;
+        if (pane == null) return;
+
+        float sx = pane.ClipSoftnessX;
+        float sy = pane.ClipSoftnessY;
+        if (sx <= 0 && sy <= 0)
+        {
+            RestoreClipSoftnessAlphas();
+            return;
+        }
+
+        float posX = pane.ScrollingPosX;
+        float posY = pane.ScrollingPosY;
+        float viewW = pane.ViewWidth;
+        float viewH = pane.ViewHeight;
+
+        for (int i = 0; i < _children.Count; i++)
+        {
+            var child = _children[i];
+
+            // 先算羽化系数（只用到位置，便宜）。
+            float factor = 1f;
+            if (sy > 0)
+            {
+                // 子对象中心相对视口顶部的纵坐标（child.Y 为内容坐标，减去滚动偏移得视口坐标）。
+                float center = child.Y - posY + child.Height * 0.5f;
+                float a = Math.Clamp(Math.Min(center, viewH - center) / sy, 0f, 1f);
+                if (a < factor) factor = a;
+            }
+            if (sx > 0)
+            {
+                float center = child.X - posX + child.Width * 0.5f;
+                float a = Math.Clamp(Math.Min(center, viewW - center) / sx, 0f, 1f);
+                if (a < factor) factor = a;
+            }
+
+            bool hasState = _clipSoftnessAlphaStates.TryGetValue(child, out var state);
+
+            // 羽化带之外（factor≈1，滚动时占绝大多数项）：不接管 Alpha。
+            // 若此前被羽化过则还原其基础 Alpha 并移除状态；否则完全不碰、不写字典——
+            // 这样状态字典只保留真正在羽化的少数边缘项，避免随列表规模膨胀与每帧冗余写入。
+            if (factor >= 0.9999f)
+            {
+                if (hasState) RestoreClipSoftnessAlpha(child);
+                continue;
+            }
+
+            // 需要羽化：确定基础 Alpha（吸收外部在两次刷新间对 Alpha 的改动），应用并记录状态。
+            float baseAlpha;
+            if (hasState)
+            {
+                float expectedAlpha = state.BaseAlpha * state.Factor;
+                baseAlpha = MathF.Abs(child.Alpha - expectedAlpha) > 0.0001f
+                    ? child.Alpha
+                    : state.BaseAlpha;
+            }
+            else
+            {
+                baseAlpha = child.Alpha;
+            }
+
+            if (!hasState || MathF.Abs(state.BaseAlpha - baseAlpha) > 0.0001f || MathF.Abs(state.Factor - factor) > 0.0001f)
+            {
+                _clipSoftnessAlphaStates[child] = (baseAlpha, factor);
+            }
+
+            float appliedAlpha = baseAlpha * factor;
+            if (MathF.Abs(child.Alpha - appliedAlpha) > 0.0001f)
+            {
+                child.Alpha = appliedAlpha;
+            }
+        }
+    }
+
+    private void RestoreClipSoftnessAlpha(GObject child)
+    {
+        if (_clipSoftnessAlphaStates.Remove(child, out var state))
+        {
+            child.Alpha = state.BaseAlpha;
+        }
+    }
+
+    private void RestoreClipSoftnessAlphas()
+    {
+        foreach (var pair in _clipSoftnessAlphaStates)
+        {
+            pair.Key.Alpha = pair.Value.BaseAlpha;
+        }
+
+        _clipSoftnessAlphaStates.Clear();
+    }
 
     public GObject AddChild(GObject child) => AddChildAt(child, _children.Count);
 
@@ -88,6 +191,7 @@ public class GComponent : GObject
         if (index < 0 || index >= _children.Count) throw new ArgumentOutOfRangeException(nameof(index));
         var child = _children[index];
         CloseComboDropdownsRecursive(child);
+        RestoreClipSoftnessAlpha(child);
         child.Parent = null;
         if (child.SortingOrder != 0) _sortingChildCount--;
         _children.RemoveAt(index);
@@ -246,7 +350,21 @@ public class GComponent : GObject
             Render.SCERenderContext.Instance.RefreshComponentScrollState(this);
         }
     }
-    public void EnsureBoundsCorrect() { if (_boundsChanged) UpdateBounds(); }
+    public void EnsureBoundsCorrect()
+    {
+        if (!_boundsChanged)
+        {
+            return;
+        }
+
+        UpdateBounds();
+        // 子项的尺寸/布局变化未必会改变内容总尺寸；布局完成后仍需刷新一次软裁剪，
+        // 否则静止列表的边缘项目可能保留旧的羽化系数。
+        if (_scrollPane != null && (_scrollPane.ClipSoftnessX > 0 || _scrollPane.ClipSoftnessY > 0))
+        {
+            UpdateClipSoftness();
+        }
+    }
     protected virtual void UpdateBounds() => _boundsChanged = false;
 
     private void TryAutoEnsureListBounds()
@@ -511,6 +629,7 @@ public class GComponent : GObject
         // Avoid collection-version invalidation when child.Dispose() mutates parent links.
         try
         {
+            _clipSoftnessAlphaStates.Clear();
             while (_children.Count > 0)
             {
                 var last = _children.Count - 1;

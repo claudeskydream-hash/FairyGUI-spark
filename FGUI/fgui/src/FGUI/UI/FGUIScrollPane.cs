@@ -24,6 +24,9 @@ public class ScrollPane
     private float _contentWidth, _contentHeight;
     private float _xPos, _yPos;
     private float _velocityX, _velocityY;
+    // 裁剪边缘羽化(FGUI clipSoftness)：靠近视口边缘 softness 像素内的内容按 Alpha 渐隐。
+    // 原生无软裁剪能力，改由逐项调整子对象 Alpha 近似(见 GComponent.UpdateClipSoftness)。
+    private float _clipSoftnessX, _clipSoftnessY;
     private bool _scrolling;
     private bool _dragging;
     private PointF _lastTouchPos;
@@ -53,8 +56,14 @@ public class ScrollPane
     private int _footerLockedSize;
 
     // Constants
-    private const float PULL_RATIO = 0.5f;
     private const float SCROLL_THRESHOLD = 5f;
+
+    // ===== 过界（橡皮筋）阻尼 =====
+    /// <summary>
+    /// 过界阻尼范围占视口尺寸的比例。往外拖越深阻力越大，位移会渐近于 视口尺寸×该比例（拖不动），
+    /// 即柔性的最大可过界距离。往回拖始终 1:1 立即跟手，不受此影响。默认 0.5。
+    /// </summary>
+    private const float OVERSCROLL_DAMP_RANGE_RATIO = 0.5f;
 
     // ===== 惯性手感旋钮（想要更长惯性就调这里）=====
     /// <summary>惯性滑行距离系数：越大，松手后滑得越远。默认 0.3；当前用"明显长"预设 0.7（可调 0.6~1.0）。</summary>
@@ -66,8 +75,6 @@ public class ScrollPane
     /// <summary>惯性/回弹动画的最短、最长时长（秒）。想更长惯性把最大值加大；默认 0.1~0.5，当前预设上限 1.2。</summary>
     private const float SCROLL_ANIM_MIN_DURATION = 0.2f;
     private const float SCROLL_ANIM_MAX_DURATION = 0.8f;
-    /// <summary>过界(橡皮筋)最大可拖距离占视口尺寸的比例。跟手拖到此极限就不再继续，松手弹回。默认 0.3。</summary>
-    private const float MAX_OVERSCROLL_RATIO = 0.5f;
 
     public ScrollType ScrollType => _scrollType;
     public float PosX { get => _xPos; set => SetPos(value, _yPos, false); }
@@ -88,6 +95,23 @@ public class ScrollPane
     public float ViewHeight => _viewHeight;
     public bool IsScrolling => _scrolling;
     public bool IsDragging => _dragging;
+    /// <summary>裁剪边缘羽化像素（X/Y）。0 表示不羽化。</summary>
+    public float ClipSoftnessX => _clipSoftnessX;
+    public float ClipSoftnessY => _clipSoftnessY;
+    public void SetClipSoftness(float x, float y)
+    {
+        x = float.IsFinite(x) ? Math.Max(0f, x) : 0f;
+        y = float.IsFinite(y) ? Math.Max(0f, y) : 0f;
+        if (_clipSoftnessX == x && _clipSoftnessY == y)
+            return;
+
+        _clipSoftnessX = x;
+        _clipSoftnessY = y;
+        // 既要让初始静止列表立刻出现羽化，也要在编辑器配置/运行时关闭羽化时恢复项目的原始 Alpha。
+        Owner?.UpdateClipSoftness();
+    }
+    /// <summary>是否正在跑惯性/回弹动画。此期间 FGUI 物理为唯一来源，必须忽略原生回读，否则回声会打断 tween 造成"打哆嗦"。</summary>
+    public bool IsTweening => _tweening;
     public bool TouchEffect { get => _touchEffect; set => _touchEffect = value; }
     public bool BouncebackEffect { get => _bouncebackEffect; set => _bouncebackEffect = value; }
     public bool MouseWheelEnabled { get => _mouseWheelEnabled; set => _mouseWheelEnabled = value; }
@@ -480,6 +504,81 @@ public class ScrollPane
         _isHolding = false;
     }
 
+    /// <summary>
+    /// 逐帧、按方向的过界阻尼。
+    /// <para>pos 为当前显示位置，delta 为本帧要施加的位移(界内 1:1 意义下的增量)，[0,max] 为界内范围，dim 为视口尺寸。</para>
+    /// <list type="bullet">
+    /// <item>界内、以及往回拖(减小越界深度)：1:1 直接跟手，保证反向立刻响应。</item>
+    /// <item>往外拖(加深越界)：位移按阻尼系数缩放，越界越深系数越小，渐近于 <c>dim·OVERSCROLL_DAMP_RANGE_RATIO</c>，
+    /// 即位移速度趋近于 0、拖不动，形成柔性上限。</item>
+    /// </list>
+    /// </summary>
+    private static float ResistedMove(float pos, float delta, float max, float dim)
+    {
+        if (delta == 0f || dim <= 0f)
+            return pos + delta;
+
+        float range = dim * OVERSCROLL_DAMP_RANGE_RATIO;
+        if (range <= 0f)
+            return pos;
+
+        // 移动回内容区的这一段永远 1:1；若单帧移动跨过另一侧边界，仅对真正越界的剩余量施加阻尼。
+        // 这也修复了旧实现从边界第一帧就能无阻力跳出一大截的问题。
+        if (delta > 0f)
+        {
+            if (pos < 0f)
+            {
+                float backToEdge = -pos;
+                if (delta <= backToEdge)
+                    return pos + delta;
+                delta -= backToEdge;
+                pos = 0f;
+            }
+
+            if (pos < max)
+            {
+                float toFarEdge = max - pos;
+                if (delta <= toFarEdge)
+                    return pos + delta;
+                delta -= toFarEdge;
+                pos = max;
+            }
+
+            return max + ApplyOutwardResistance(pos - max, delta, range);
+        }
+
+        float magnitude = -delta;
+        if (pos > max)
+        {
+            float backToEdge = pos - max;
+            if (magnitude <= backToEdge)
+                return pos + delta;
+            magnitude -= backToEdge;
+            pos = max;
+        }
+
+        if (pos > 0f)
+        {
+            float toNearEdge = pos;
+            if (magnitude <= toNearEdge)
+                return pos + delta;
+            magnitude -= toNearEdge;
+            pos = 0f;
+        }
+
+        return -ApplyOutwardResistance(-pos, magnitude, range);
+    }
+
+    /// <summary>积分形式的阻尼：导数随越界深度线性衰减，因而首帧跨界也会受阻、越拖越难拖。</summary>
+    private static float ApplyOutwardResistance(float overshoot, float outwardDelta, float range)
+    {
+        if (overshoot >= range)
+            return overshoot;
+
+        // d(overshoot)/d(drag) = 1 - overshoot/range 的解析解；接近 range 时速度自然趋近于 0。
+        return range - (range - Math.Max(0f, overshoot)) * MathF.Exp(-outwardDelta / range);
+    }
+
     private float ClampX(float x)
     {
         float max = _contentWidth - _viewWidth;
@@ -503,6 +602,12 @@ public class ScrollPane
     {
         Owner?.DispatchEvent("onScroll", null);
         UpdateScrollBars();
+
+        // 裁剪边缘羽化：滚动位置一变，就按各子对象到视口边缘的距离刷新其 Alpha。
+        if ((_clipSoftnessX > 0 || _clipSoftnessY > 0) && Owner != null)
+        {
+            Owner.UpdateClipSoftness();
+        }
 
         // Update page controller if in page mode
         if (_pageMode)
@@ -608,30 +713,23 @@ public class ScrollPane
         _lastTouchPos = new PointF(x, y);
         _lastTouchTime = now;
 
-        float newX = _xPos - dx;
-        float newY = _yPos - dy;
+        float maxX = Math.Max(0, _contentWidth - _viewWidth);
+        float maxY = Math.Max(0, _contentHeight - _viewHeight);
 
-        // Apply bounce effect
+        float newX, newY;
         if (_bouncebackEffect)
         {
-            float maxX = Math.Max(0, _contentWidth - _viewWidth);
-            float maxY = Math.Max(0, _contentHeight - _viewHeight);
-            // 过界极限：跟手拖到 视口尺寸×比例 就封顶，不再继续下拉。
-            float limitX = _viewWidth * MAX_OVERSCROLL_RATIO;
-            float limitY = _viewHeight * MAX_OVERSCROLL_RATIO;
-
-            if (newX < 0) newX = Math.Max(newX * PULL_RATIO, -limitX);
-            else if (newX > maxX) newX = Math.Min(maxX + (newX - maxX) * PULL_RATIO, maxX + limitX);
-
-            if (newY < 0) newY = Math.Max(newY * PULL_RATIO, -limitY);
-            else if (newY > maxY) newY = Math.Min(maxY + (newY - maxY) * PULL_RATIO, maxY + limitY);
+            // 逐帧、按方向的阻尼：往外拖(加深越界)有阻力，越深越大、到极限时速度为 0 拖不动；
+            // 往回拖(减小越界)立即 1:1 跟手，避免深度越界时“往回拖拖不动”。
+            newX = ResistedMove(_xPos, -dx, maxX, _viewWidth);
+            newY = ResistedMove(_yPos, -dy, maxY, _viewHeight);
         }
         else
         {
-            newX = ClampX(newX);
-            newY = ClampY(newY);
+            newX = ClampX(_xPos - dx);
+            newY = ClampY(_yPos - dy);
         }
-        
+
         _xPos = newX;
         _yPos = newY;
         _scrolling = true;
@@ -796,6 +894,13 @@ public class ScrollPane
             _contentHeight = height;
             SetPos(_xPos, _yPos, false);
 
+            // 内容尺寸变化(如首次绑定数据、项数更新)后即使滚动位置没变，也刷新一次羽化，
+            // 让静止列表一开始就带软边(否则要等第一次滚动才生效)。
+            if ((_clipSoftnessX > 0 || _clipSoftnessY > 0) && Owner != null)
+            {
+                Owner.UpdateClipSoftness();
+            }
+
             // Content overflow state can change after data binding (e.g. virtual list NumItems update).
             // Re-apply native scrollability only when scrollable-state flips, otherwise it can cause
             // feedback loops in virtual list scroll syncing.
@@ -826,36 +931,62 @@ public class ScrollPane
                 _pageHeight = height;
             }
             SetPos(_xPos, _yPos, false);
+
+            // 视口尺寸变化即使没有改变滚动位置，也会改变子项到软裁剪边缘的距离。
+            if ((_clipSoftnessX > 0 || _clipSoftnessY > 0) && Owner != null)
+            {
+                Owner.UpdateClipSoftness();
+            }
         }
     }
 
     public void Setup(ByteBuffer buffer)
     {
+        // 严格对齐 FairyGUI 官方二进制格式（HelpProject/FairyGUI-unity/ScrollPane.cs）：
+        //   scrollType:byte, scrollBarDisplay:byte(独立!), flags:int,
+        //   scrollBarMargin: bool(+int×4), 然后依次 4 个 ReadS(竖/横滚动条、header、footer 资源)。
+        // 旧实现把 scrollBarDisplay 那一字节漏读、并把 display 从 flags&3 里瞎猜，导致 scrollBar="hidden" 不生效、
+        // 且后续字节整体错位。此块由调用方 Seek 到滚动块并在返回后恢复 Position，故本方法内错位不影响其余解析。
         _scrollType = (ScrollType)buffer.ReadByte();
-        int scrollBarFlags = buffer.ReadInt();
-        _scrollBarMargin = buffer.ReadFloat();
-        _scrollBarDisplayType = (ScrollBarDisplayType)(scrollBarFlags & 0x03);
+        var scrollBarDisplay = (ScrollBarDisplayType)buffer.ReadByte();
+        int flags = buffer.ReadInt();
 
-        if (buffer.ReadBool()) _scrollSpeed = buffer.ReadFloat();
-        if (buffer.ReadBool()) buffer.ReadS(); // vScrollBar resource
-        if (buffer.ReadBool()) buffer.ReadS(); // hScrollBar resource
+        if (buffer.ReadBool())
+        {
+            // scrollBarMargin: top/bottom/left/right（移植层仅留 top 作近似，其余按序消费以对齐）。
+            _scrollBarMargin = buffer.ReadInt();
+            buffer.ReadInt();
+            buffer.ReadInt();
+            buffer.ReadInt();
+        }
 
-        // Align with FairyGUI Unity flag semantics:
-        // bit1=snapToItem, bit3=pageMode, bit4/5=touchEffect override, bit6/7=bounceback override, bit8=inertiaDisabled.
-        _snapToItem = (scrollBarFlags & 2) != 0;
-        _pageMode = (scrollBarFlags & 8) != 0;
+        // 竖/横滚动条资源 + header/footer 资源：移植层暂不使用，但必须按序读取以对齐缓冲。
+        buffer.ReadS();
+        buffer.ReadS();
+        buffer.ReadS();
+        buffer.ReadS();
 
-        if ((scrollBarFlags & 16) != 0)
+        // flags 位语义（官方）：1=displayOnLeft,2=snapToItem,4=displayInDemand,8=pageMode,
+        // 16/32=touchEffect 开/关,64/128=bounceback 开/关,256=inertiaDisabled。
+        _snapToItem = (flags & 2) != 0;
+        _pageMode = (flags & 8) != 0;
+
+        if ((flags & 16) != 0)
             _touchEffect = true;
-        else if ((scrollBarFlags & 32) != 0)
+        else if ((flags & 32) != 0)
             _touchEffect = false;
 
-        if ((scrollBarFlags & 64) != 0)
+        if ((flags & 64) != 0)
             _bouncebackEffect = true;
-        else if ((scrollBarFlags & 128) != 0)
+        else if ((flags & 128) != 0)
             _bouncebackEffect = false;
 
-        _inertiaDisabled = (scrollBarFlags & 256) != 0;
+        _inertiaDisabled = (flags & 256) != 0;
+
+        // Default：官方在移动端解析为 Auto；本移植面向触屏，统一按 Auto 处理（非 Hidden，即显示）。
+        if (scrollBarDisplay == ScrollBarDisplayType.Default)
+            scrollBarDisplay = ScrollBarDisplayType.Auto;
+        _scrollBarDisplayType = scrollBarDisplay;
 
         if (Owner != null)
         {

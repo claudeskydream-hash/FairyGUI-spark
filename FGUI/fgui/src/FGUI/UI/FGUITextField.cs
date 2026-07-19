@@ -374,14 +374,17 @@ public class GTextInput : GTextField
     
     protected override void CreateNativeControl()
     {
-        // 输入框使用Input控件
+        // 输入框使用 Input 控件。必须走渲染上下文的统一创建路径,而不是自己 CreateInput():
+        // 只有 SCERenderContext.CreateNativeControl 才会随后调用 ApplyProperties
+        // (定位/尺寸/可见/BindTouchEvents/指针拦截)。若绕过它,输入框虽能显示,
+        // 但指针事件默认穿透到父级,点击无法聚焦→无法输入。
         if (NativeObject == null)
         {
+            Render.SCERenderContext.Instance.CreateNativeControl(this);
             var adapter = Render.SCERenderContext.Instance.Adapter;
-            NativeObject = adapter?.CreateInput();
-            if (NativeObject != null)
+            if (NativeObject != null && adapter != null)
             {
-                adapter?.OnInputTextChanged(NativeObject, text =>
+                adapter.OnInputTextChanged(NativeObject, text =>
                 {
                     if (_text == text)
                     {

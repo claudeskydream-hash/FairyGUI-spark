@@ -442,14 +442,18 @@ public class RelationItem
     void OnTargetXYChanged(EventContext context)
     {
         if (_target == null) return;
-        if (_owner.Parent?.Relations?.Handling != null) 
+        // 重入保护必须挂在 owner 自身的 Relations 上,而非 parent。
+        // 挂在 parent 上会让同一父级下的所有兄弟共用一个 Handling 标记:
+        // 当某个兄弟(如 n1_hjw0)响应父级尺寸变化被重排时会占用该标记,
+        // 导致以该兄弟为 target 的其他节点(如 n23)收到 onPositionChanged 时直接跳过而不跟随。
+        _owner.InitRelations();
+        if (_owner.Relations!.Handling != null)
         {
             _targetData = (_target.X, _target.Y, _targetData.w, _targetData.h);
             return;
         }
 
-        if (_owner.Parent != null)
-            _owner.Parent.Relations!.Handling = _target;
+        _owner.Relations!.Handling = _target;
 
         float ox = _owner.X;
         float oy = _owner.Y;
@@ -472,21 +476,21 @@ public class RelationItem
             }
         }
 
-        if (_owner.Parent != null)
-            _owner.Parent.Relations!.Handling = null;
+        _owner.Relations!.Handling = null;
     }
 
     void OnTargetSizeChanged(EventContext context)
     {
         if (_target == null) return;
-        if (_owner.Parent?.Relations?.Handling != null)
+        // 重入保护挂在 owner 自身,理由同 OnTargetXYChanged。
+        _owner.InitRelations();
+        if (_owner.Relations!.Handling != null)
         {
             _targetData = (_targetData.x, _targetData.y, _target.Width, _target.Height);
             return;
         }
 
-        if (_owner.Parent != null)
-            _owner.Parent.Relations!.Handling = _target;
+        _owner.Relations!.Handling = _target;
 
         float ox = _owner.X;
         float oy = _owner.Y;
@@ -516,8 +520,7 @@ public class RelationItem
             _owner.UpdateGearFromRelations(2, ownerDw, ownerDh);
         }
 
-        if (_owner.Parent != null)
-            _owner.Parent.Relations!.Handling = null;
+        _owner.Relations!.Handling = null;
     }
 }
 #endif

@@ -38,6 +38,10 @@ public class SCEAdapter : ISCEAdapter
     private readonly Dictionary<object, SizeF> _baseControlSizes = new();
     // Track logical top-left position before scale fallback adjusts visual bounds.
     private readonly Dictionary<object, PointF> _controlPositions = new();
+    // 滚动面板 → 其裁剪外壳(与视口等大、开启 ClipContent)。过界时平移面板本体、由外壳裁掉溢出。
+    private readonly Dictionary<object, Panel> _scrollClipHost = new();
+    // 过界平移上次实际写入的偏移，用于跳过界内滚动(dx=dy=0)每帧的冗余原生 Position 写入。
+    private readonly Dictionary<object, PointF> _overscrollLastApplied = new();
     // Base rectangles for panel-subtree fallback scaling (button downEffect=scale).
     private readonly Dictionary<object, RectangleF> _fallbackScaleBaseRects = new();
     private readonly HashSet<object> _fallbackScaleActiveRoots = new();
@@ -200,6 +204,19 @@ public class SCEAdapter : ISCEAdapter
         panel.ScrollEnabled = true;
         panel.ScrollOrientation = Orientation.Vertical;
         panel.ScrollBarValue = 0f;
+        panel.ClipContent = true;
+
+        // 裁剪外壳：过界时平移“面板本体”不会与原生子级排布打架(不抖)，但面板一动会连自身裁剪框
+        // 一起移走、挡不住溢出。故用一个与视口等大、开启 ClipContent 的外壳把面板包住：
+        // 面板在外壳内平移，外壳把移出视口的部分裁掉——既不抖，也不会飞出容器。
+        // 面板始终固定在外壳内 (0,0)；列表真实的位置/尺寸由外壳承载(见 SetPosition/SetSize/AddChild)。
+        var clipHost = new Panel();
+        clipHost.Background(Color.Transparent);
+        clipHost.ClipContent = true;
+        clipHost.AlignTop().AlignLeft();
+        panel.AlignTop().AlignLeft();
+        clipHost.Add(panel);
+        _scrollClipHost[panel] = clipHost;
         return panel;
     }
 
@@ -229,19 +246,44 @@ public class SCEAdapter : ISCEAdapter
 
     public void SetPosition(object control, float x, float y)
     {
-        if (control is Control c)
+        if (control is not Control c)
         {
-            c.Position(x, y);
-            TrackControlPosition(control, x, y);
+            return;
         }
+
+        if (_scrollClipHost.TryGetValue(control, out var host))
+        {
+            // 有裁剪外壳：真实位置落到外壳上，面板在外壳内固定 (0,0)。
+            // 面板基准记 (0,0)，过界时 SetScrollOverscroll 以此为基准在外壳内平移面板。
+            host.Position(x, y);
+            TrackControlPosition(host, x, y);
+            c.Position(0, 0);
+            TrackControlPosition(control, 0, 0);
+            return;
+        }
+
+        c.Position(x, y);
+        TrackControlPosition(control, x, y);
     }
 
     public void SetScrollOverscroll(object control, float dx, float dy)
     {
-        // 以布局基准位置(_controlPositions)为基础叠加临时平移，不改基准，避免污染布局。
+        // 过界(橡皮筋)平移的是“面板本体”，不是它内部的子级。
+        // 原因：原生面板滚动时只移动其内部子级、从不改动面板自身相对父级的位置，
+        // 所以在这里平移面板自身不会与原生的子级排布互相抢(不会“打哆嗦”)。
+        // 面板固定在裁剪外壳内、基准 (0,0)，这里把它在外壳内平移；移出视口的部分由外壳裁掉，不会飞出容器。
         if (control is Control c && _controlPositions.TryGetValue(control, out var basePos))
         {
+            // 界内滚动时 dx=dy=0，面板本就停在基准位置，无需每帧重复写入原生 Position；
+            // 仅当过界量相对上次有变化时才写。这是每帧都会命中的热点，收益覆盖所有可滚动列表。
+            var last = _overscrollLastApplied.TryGetValue(control, out var l) ? l : default;
+            if (MathF.Abs(last.X - dx) < 0.01f && MathF.Abs(last.Y - dy) < 0.01f)
+            {
+                return;
+            }
+
             c.Position(basePos.X + dx, basePos.Y + dy);
+            _overscrollLastApplied[control] = new PointF(dx, dy);
         }
     }
 
@@ -263,6 +305,13 @@ public class SCEAdapter : ISCEAdapter
             c.Size(safeWidth, safeHeight);
             TrackControlSize(control, safeWidth, safeHeight);
             _baseControlSizes[control] = new SizeF(safeWidth, safeHeight);
+
+            // 有裁剪外壳：外壳与面板同尺寸，才能恰好裁在视口边界上。
+            if (_scrollClipHost.TryGetValue(control, out var host))
+            {
+                host.Size(safeWidth, safeHeight);
+                TrackControlSize(host, safeWidth, safeHeight);
+            }
         }
     }
 
@@ -600,7 +649,14 @@ public class SCEAdapter : ISCEAdapter
     {
         if (control is PanelScrollable panel)
         {
-            panel.ScrollBarSize = MathF.Max(0f, size);
+            var safe = MathF.Max(0f, size);
+            panel.ScrollBarSize = safe;
+            // 原生 PanelScrollable 只把宽度设 0 不足以隐藏拖杆(仍会画出轨道/滑块)，
+            // 隐藏时把滚动条颜色一并设为全透明，彻底不可见。
+            if (safe <= 0f)
+            {
+                panel.ScrollBarColor = Color.Transparent;
+            }
         }
     }
 
@@ -2406,51 +2462,62 @@ public class SCEAdapter : ISCEAdapter
 
     public void AddChild(object parent, object child)
     {
-        if (parent is Control p && child is Control c)
+        // 若 child 是被裁剪外壳包着的滚动面板：真正要挂进父级的是外壳(面板已固定在外壳内)。
+        // 用外壳作为实际控件与跟踪键，位置/尺寸也取外壳自己的跟踪值。
+        var hosted = _scrollClipHost.TryGetValue(child, out var host);
+        Control? actual = hosted ? host : child as Control;
+        object trackKey = hosted ? host! : child;
+
+        if (parent is Control p && actual is Control c)
         {
-            if (_attachedParentByChild.TryGetValue(child, out var existingParent))
+            if (_attachedParentByChild.TryGetValue(trackKey, out var existingParent))
             {
                 if (ReferenceEquals(existingParent, parent))
                 {
                     LogHierarchyDiag("[FGUI][DIAG] adapter skip duplicate AddChild parent={ParentHash} child={ChildHash}",
-                        parent.GetHashCode(), child.GetHashCode());
+                        parent.GetHashCode(), trackKey.GetHashCode());
                     return;
                 }
 
                 c.RemoveFromParent();
                 LogHierarchyDiag("[FGUI][DIAG] adapter reparent child={ChildHash} from={FromHash} to={ToHash}",
-                    child.GetHashCode(), existingParent.GetHashCode(), parent.GetHashCode());
+                    trackKey.GetHashCode(), existingParent.GetHashCode(), parent.GetHashCode());
             }
 
             c.AlignTop().AlignLeft();
             p.Add(c);
-            if (_controlPositions.TryGetValue(child, out var trackedPos))
+            if (_controlPositions.TryGetValue(trackKey, out var trackedPos))
             {
                 c.Position(trackedPos.X, trackedPos.Y);
             }
 
-            if (_controlSizes.TryGetValue(child, out var trackedSize))
+            if (_controlSizes.TryGetValue(trackKey, out var trackedSize))
             {
                 c.Size(trackedSize.Width, trackedSize.Height);
             }
 
-            _attachedParentByChild[child] = parent;
+            _attachedParentByChild[trackKey] = parent;
         }
     }
 
     public void RemoveChild(object parent, object child)
     {
-        if (child is Control c)
+        // 若 child 是被裁剪外壳包着的滚动面板：从父级摘掉的是外壳。
+        var hosted = _scrollClipHost.TryGetValue(child, out var host);
+        Control? c = hosted ? host : child as Control;
+        object trackKey = hosted ? host! : child;
+
+        if (c != null)
         {
-            if (_attachedParentByChild.TryGetValue(child, out var existingParent) &&
+            if (_attachedParentByChild.TryGetValue(trackKey, out var existingParent) &&
                 !ReferenceEquals(existingParent, parent))
             {
                 LogHierarchyDiag("[FGUI][DIAG] adapter RemoveChild mismatch child={ChildHash} trackedParent={TrackedHash} requestParent={RequestHash}",
-                    child.GetHashCode(), existingParent.GetHashCode(), parent.GetHashCode());
+                    trackKey.GetHashCode(), existingParent.GetHashCode(), parent.GetHashCode());
             }
 
             c.RemoveFromParent();
-            _attachedParentByChild.Remove(child);
+            _attachedParentByChild.Remove(trackKey);
         }
     }
 
@@ -3012,6 +3079,15 @@ public class SCEAdapter : ISCEAdapter
         _controlSizes.Remove(control);
         _baseControlSizes.Remove(control);
         _controlPositions.Remove(control);
+        _overscrollLastApplied.Remove(control);
+        // 一并回收裁剪外壳：把外壳从父级摘掉并释放，避免残留空容器。
+        if (_scrollClipHost.Remove(control, out var clipHost))
+        {
+            _controlPositions.Remove(clipHost);
+            _controlSizes.Remove(clipHost);
+            _attachedParentByChild.Remove(clipHost);
+            clipHost.RemoveFromParent();
+        }
         _fallbackScaleBaseRects.Remove(control);
         _fallbackScaleActiveRoots.Remove(control);
         if (control is Canvas canvas)
@@ -3066,6 +3142,13 @@ public class SCEAdapter : ISCEAdapter
         _controlSizes.Remove(control);
         _baseControlSizes.Remove(control);
         _controlPositions.Remove(control);
+        if (_scrollClipHost.Remove(control, out var clipHost))
+        {
+            _controlPositions.Remove(clipHost);
+            _controlSizes.Remove(clipHost);
+            _attachedParentByChild.Remove(clipHost);
+            clipHost.RemoveFromParent();
+        }
         _fallbackScaleBaseRects.Remove(control);
         _fallbackScaleActiveRoots.Remove(control);
         if (!clearChildren || _attachedParentByChild.Count == 0)

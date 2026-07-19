@@ -222,7 +222,9 @@ public class SCERenderContext
             return;
         }
 
+        // 输入框也必须拦截指针:否则点击穿透到父级,原生 Input 收不到按下事件、无法聚焦输入。
         var block = obj is GButton
+            || obj is GTextInput
             || (obj is GComponent component && component.ScrollPane != null);
         _adapter.SetBlockPointerEvents(native, block);
     }
@@ -1030,9 +1032,12 @@ public class SCERenderContext
                         return;
                     }
 
-                    // 拖动中以手指(FGUI 的 _xPos/_yPos)为准，忽略原生回读。
-                    // 否则过界时原生回读的夹紧值(0/1)会把 _yPos 拉回边缘，导致按住也"自己恢复"。
-                    if (pane.IsDragging)
+                    // 拖动中、以及松手后的惯性/回弹 tween 期间，都以 FGUI 的 _xPos/_yPos 为唯一来源，
+                    // 忽略原生回读。否则：
+                    // 1) 过界时原生夹紧值(0/1)会把 _yPos 拉回边缘，按住也"自己恢复"；
+                    // 2) tween 期间原生延迟一帧的量化回声若被写回，会触发 SetPos→KillTween，
+                    //    把回弹动画反复打断重启，在边界处表现为"打哆嗦"且收不了尾、"划不动"。
+                    if (pane.IsDragging || pane.IsTweening)
                     {
                         return;
                     }
