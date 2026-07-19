@@ -141,12 +141,6 @@ FGUIManager.Initialize(new SCEAdapter(), designWidth: 1136, designHeight: 640);
 
 MIT,详见 [LICENSE](LICENSE)。
 
-## 🙏 致谢
-
-- [FairyGUI](https://www.fairygui.com/) —— 优秀的 UI 编辑器与框架
-- 星火编辑器团队 —— 提供游戏开发平台
-- 点点大佬 —— 提供了适配的基础代码
-
 ---
 
 **⭐ 如果这个库对你有帮助,欢迎 Star！**
