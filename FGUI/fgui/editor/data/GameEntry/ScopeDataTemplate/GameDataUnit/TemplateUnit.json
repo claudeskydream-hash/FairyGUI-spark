@@ -1,7 +1,0 @@
-﻿{
-  "$id": "$01K42D4SFS3VF7C1K4WN0FYKBD",
-  "Root": {
-    "$type": "GameCore.EntitySystem.Data.GameDataUnit",
-    "Name": "英雄模板"
-  }
-}

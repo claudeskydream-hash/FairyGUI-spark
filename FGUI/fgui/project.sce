@@ -1,1 +1,0 @@
-{"mainview_settings":{"editor_resolution_rate_index":4},"debug_settings":{"game_resolution_rate_index":2}}
