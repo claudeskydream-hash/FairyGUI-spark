@@ -22,6 +22,8 @@
 - ✅ **Transition 动画 / Tween 补间**
 - ✅ **拖拽（Drag & Drop）** —— 含 DragDropManager 拖拽代理
 - ✅ **事件系统** —— 完整的事件分发（Click / Drag / Drop 等）
+- ✅ **文本样式** —— 描边 Stroke / 阴影 Shadow / 下划线 Underline / 粗体 / 斜体 / 颜色
+- ✅ **UBB 内联富文本** —— `[u][b][i][color=#RRGGBB]` 转引擎内联标记渲染,可嵌套（详见 [文本装饰实现文档](docs/文本装饰实现-描边阴影下划线.md)）
 - ✅ **资源加载适配** —— 通过 `ISCEAdapter` 对接星火资源/渲染
 - ✅ **示例代码** —— Basics / Bag / VirtualList 三个完整 Demo
 
@@ -102,13 +104,16 @@ FGUIManager.Initialize(new SCEAdapter(), designWidth: 1136, designHeight: 640);
 
 ## ⚠️ 已知限制
 
-受星火平台限制,以下 FairyGUI 文本特性暂不支持(命中时日志会告警,每种只提示一次):
+文本特性支持情况（详见 [文本装饰实现文档](docs/文本装饰实现-描边阴影下划线.md)）：
 
-- ❌ 文字描边（Stroke）
-- ❌ 文字阴影（Shadow）
-- ❌ 文字下划线（Underline）
-- ❌ 行间距 / 字间距（Leading / LetterSpacing）
-- ❌ 部分动画效果
+| 特性 | 状态 |
+|---|---|
+| 描边 Stroke / 阴影 Shadow | ✅ 已支持（引擎原生 Label 属性） |
+| 下划线 Underline / 粗体 / 斜体 / 颜色 | ✅ 已支持（`<u><b><i><color>` 内联标记） |
+| 内联字号（UBB `[size]`） | ❌ 引擎无内联字号能力，被剥离；字号只能用**字段级** FontSize |
+| 删除线 Strikethrough | ❌ 未实现 |
+| 行间距 / 字间距（Leading / LetterSpacing） | ⚠️ 引擎原生支持，但尚未接线 |
+| 部分动画效果 | ⚠️ 部分不支持 |
 
 ## 🔧 开发指南
 
