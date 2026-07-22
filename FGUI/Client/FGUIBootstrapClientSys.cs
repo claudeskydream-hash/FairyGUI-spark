@@ -31,14 +31,9 @@ public sealed class FGUIBootstrapClientSys : IGameClass
     private static Task<bool> OnGameStartAsync(object sender, EventGameStart eventArgs)
     {
         EnsureInitialized();
-        // 演示：加载并显示 Basics 包的 Main 组件（换基座后的连通性验证，可后续移除）
-        var main = LoadAndShow("ui/MainAssetPackage", "MainAssetPackage", "MainLayer");
-        // 填充 RwdList(外层)→ 每行的 itemList(内层)→ ItemCell，并接上每行的加按钮
-        SetupRwdList(main);
-        // btnAdd 点击 → 循环切换控制器 btnControl 的页
-        SetupBtnControl(main);
-        // 独立的 TTF 字体测试：try/catch 包裹，字体有问题也不影响主界面
-        // TryShowFontTest(main);
+        // MainLayer 演示界面已迁移到各项目自己的 UI 层(例如 AzureSail 的
+        // src/Client/Game/GameUI: GameUIManager + MainLayerTest)。
+        // 共享运行时此处只保留初始化 + 每帧 Tick 驱动,不再自动加载任何业务界面。
         return Task.FromResult(true);
     }
 
