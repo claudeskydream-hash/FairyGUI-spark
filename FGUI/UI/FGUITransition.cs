@@ -572,16 +572,16 @@ public class Transition
         }
 
         _decodeDiagLogCount++;
-        Game.Logger.LogInformation(
-            "[FGUI][T11][DECODE] idx={Idx} type={Type} hasTween={HasTween} startB3={StartB3} endB3={EndB3} version={Version} label={Label} endLabel={EndLabel}",
-            _decodeDiagLogCount,
-            item.Type,
-            item.TweenConfig != null,
-            item.StartValue.B3,
-            item.EndValue.B3,
-            version,
-            item.Label ?? string.Empty,
-            item.Label2 ?? string.Empty);
+//         Game.Logger.LogInformation(
+//             "[FGUI][T11][DECODE] idx={Idx} type={Type} hasTween={HasTween} startB3={StartB3} endB3={EndB3} version={Version} label={Label} endLabel={EndLabel}",
+//             _decodeDiagLogCount,
+//             item.Type,
+//             item.TweenConfig != null,
+//             item.StartValue.B3,
+//             item.EndValue.B3,
+//             version,
+//             item.Label ?? string.Empty,
+//             item.Label2 ?? string.Empty);
     }
 
     private void EmitRelationDiag(GObject target, float dx, float dy, bool appliedStart, bool appliedEnd)
@@ -592,14 +592,14 @@ public class Transition
         }
 
         _relationDiagLogCount++;
-        Game.Logger.LogInformation(
-            "[FGUI][T11][REL] idx={Idx} target={Target} dx={Dx} dy={Dy} appliedStart={AppliedStart} appliedEnd={AppliedEnd}",
-            _relationDiagLogCount,
-            target.Name,
-            dx,
-            dy,
-            appliedStart,
-            appliedEnd);
+//         Game.Logger.LogInformation(
+//             "[FGUI][T11][REL] idx={Idx} target={Target} dx={Dx} dy={Dy} appliedStart={AppliedStart} appliedEnd={AppliedEnd}",
+//             _relationDiagLogCount,
+//             target.Name,
+//             dx,
+//             dy,
+//             appliedStart,
+//             appliedEnd);
     }
 }
 

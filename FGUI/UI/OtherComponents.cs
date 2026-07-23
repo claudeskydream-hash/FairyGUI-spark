@@ -105,7 +105,7 @@ public class GLoader : GObject
         SourceHeight = image.SourceHeight;
         _externalResolvedPath = resolvedPath;
         SetContent(image);
-        Game.Logger.LogInformation("[FGUI][Loader] external load success url={Url} resolved={Resolved}", _url, resolvedPath);
+//         Game.Logger.LogInformation("[FGUI][Loader] external load success url={Url} resolved={Resolved}", _url, resolvedPath);
     }
 
     protected virtual void OnExternalLoadFailed(string url, string? resolvedPath)
@@ -2791,14 +2791,14 @@ public class PopupMenu
             return;
         }
 
-        Game.Logger.LogInformation(
-            "[FGUI][POPUP][MENU] pane ready pane={Pane} list={List} listSize={W}x{H} paneSize={PW}x{PH}",
-            _contentPane.Name ?? "<unnamed>",
-            _list.Name ?? "<unnamed>",
-            _list.Width,
-            _list.Height,
-            _contentPane.Width,
-            _contentPane.Height);
+//         Game.Logger.LogInformation(
+//             "[FGUI][POPUP][MENU] pane ready pane={Pane} list={List} listSize={W}x{H} paneSize={PW}x{PH}",
+//             _contentPane.Name ?? "<unnamed>",
+//             _list.Name ?? "<unnamed>",
+//             _list.Width,
+//             _list.Height,
+//             _contentPane.Width,
+//             _contentPane.Height);
 
         _listPaddingWidth = Math.Max(0f, _contentPane.Width - _list.Width);
         _listPaddingHeight = Math.Max(0f, _contentPane.Height - _list.Height);
@@ -2997,26 +2997,26 @@ public class PopupMenu
     {
         if (_list == null || context.Data is not GObject clickedObject)
         {
-            Game.Logger.LogWarning(
-                "[FGUI][POPUP][TRACE][ITEM] click ignored hasList={HasList} dataType={DataType}",
-                _list != null,
-                context.Data?.GetType().Name ?? "<null>");
+//             Game.Logger.LogWarning(
+//                 "[FGUI][POPUP][TRACE][ITEM] click ignored hasList={HasList} dataType={DataType}",
+//                 _list != null,
+//                 context.Data?.GetType().Name ?? "<null>");
             return;
         }
 
         var index = ResolveVisibleItemIndex(clickedObject);
-        Game.Logger.LogWarning(
-            "[FGUI][POPUP][TRACE][ITEM] clicked={Clicked} clickedType={ClickedType} resolvedIndex={Index} visibleCount={Count} listChildren={Children}",
-            clickedObject.Name ?? "<unnamed>",
-            clickedObject.GetType().Name,
-            index,
-            _visibleItems.Count,
-            _list.NumChildren);
+//         Game.Logger.LogWarning(
+//             "[FGUI][POPUP][TRACE][ITEM] clicked={Clicked} clickedType={ClickedType} resolvedIndex={Index} visibleCount={Count} listChildren={Children}",
+//             clickedObject.Name ?? "<unnamed>",
+//             clickedObject.GetType().Name,
+//             index,
+//             _visibleItems.Count,
+//             _list.NumChildren);
         if (index < 0 || index >= _visibleItems.Count)
         {
             // Defensive close: if click routed from a nested node we failed to resolve,
             // close popup to avoid leaving an invisible input blocker on top.
-            Game.Logger.LogWarning("[FGUI][POPUP][TRACE][ITEM] invalid index => hide");
+//             Game.Logger.LogWarning("[FGUI][POPUP][TRACE][ITEM] invalid index => hide");
             Hide();
             return;
         }
@@ -3024,12 +3024,12 @@ public class PopupMenu
         var item = _visibleItems[index];
         if (item.Grayed || item.IsSeparator)
         {
-            Game.Logger.LogWarning(
-                "[FGUI][POPUP][TRACE][ITEM] blocked index={Index} caption={Caption} grayed={Grayed} separator={Separator}",
-                index,
-                item.Caption,
-                item.Grayed,
-                item.IsSeparator);
+//             Game.Logger.LogWarning(
+//                 "[FGUI][POPUP][TRACE][ITEM] blocked index={Index} caption={Caption} grayed={Grayed} separator={Separator}",
+//                 index,
+//                 item.Caption,
+//                 item.Grayed,
+//                 item.IsSeparator);
             return;
         }
 
@@ -3038,12 +3038,12 @@ public class PopupMenu
             item.Checked = !item.Checked;
         }
 
-        Game.Logger.LogWarning(
-            "[FGUI][POPUP][TRACE][ITEM] invoke index={Index} caption={Caption} checkable={Checkable} checked={Checked}",
-            index,
-            item.Caption,
-            item.Checkable,
-            item.Checked);
+//         Game.Logger.LogWarning(
+//             "[FGUI][POPUP][TRACE][ITEM] invoke index={Index} caption={Caption} checkable={Checkable} checked={Checked}",
+//             index,
+//             item.Caption,
+//             item.Checkable,
+//             item.Checked);
         Hide();
         item.Callback?.Invoke();
     }
@@ -3069,7 +3069,7 @@ public class PopupMenu
         EnsureContentPaneCreated();
         if (_contentPane == null)
         {
-            Game.Logger.LogWarning("[FGUI][POPUP][TRACE][SHOW] aborted contentPane=null");
+//             Game.Logger.LogWarning("[FGUI][POPUP][TRACE][SHOW] aborted contentPane=null");
             _isShown = false;
             return;
         }
@@ -3078,15 +3078,15 @@ public class PopupMenu
 
         var anchor = target ?? _popupTarget;
         var host = ResolvePopupHost(anchor);
-        Game.Logger.LogWarning(
-            "[FGUI][POPUP][TRACE][SHOW] begin anchor={Anchor} host={Host} dir={Dir} paneParent={PaneParent} paneVisible={PaneVisible} paneFinal={PaneFinal} paneNative={PaneNative}",
-            anchor?.Name ?? "<null>",
-            host?.Name ?? "<null>",
-            direction,
-            _contentPane.Parent?.Name ?? "<none>",
-            _contentPane.Visible,
-            _contentPane.FinalVisible,
-            _contentPane.NativeObject != null);
+//         Game.Logger.LogWarning(
+//             "[FGUI][POPUP][TRACE][SHOW] begin anchor={Anchor} host={Host} dir={Dir} paneParent={PaneParent} paneVisible={PaneVisible} paneFinal={PaneFinal} paneNative={PaneNative}",
+//             anchor?.Name ?? "<null>",
+//             host?.Name ?? "<null>",
+//             direction,
+//             _contentPane.Parent?.Name ?? "<none>",
+//             _contentPane.Visible,
+//             _contentPane.FinalVisible,
+//             _contentPane.NativeObject != null);
         if (host != null && anchor != null)
         {
             if (_contentPane.Parent != host)
@@ -3120,29 +3120,29 @@ public class PopupMenu
             _contentPane.SetXY(Math.Clamp(x, 0f, maxX), Math.Clamp(y, 0f, maxY));
             _contentPane.Touchable = true;
             _contentPane.Visible = true;
-            Game.Logger.LogInformation(
-                "[FGUI][POPUP][MENU] show anchor={Anchor} host={Host} hostSize={HostW}x{HostH} paneSize={PaneW}x{PaneH} items={Items} xy={X},{Y} final={Final} alpha={Alpha} paneNative={PaneNative} hostNative={HostNative}",
-                anchor.Name ?? "<unnamed>",
-                host.Name ?? "<unnamed>",
-                host.Width,
-                host.Height,
-                _contentPane.Width,
-                _contentPane.Height,
-                _visibleItems.Count,
-                _contentPane.X,
-                _contentPane.Y,
-                _contentPane.FinalVisible,
-                _contentPane.Alpha,
-                _contentPane.NativeObject != null,
-                host.NativeObject != null);
+//             Game.Logger.LogInformation(
+//                 "[FGUI][POPUP][MENU] show anchor={Anchor} host={Host} hostSize={HostW}x{HostH} paneSize={PaneW}x{PaneH} items={Items} xy={X},{Y} final={Final} alpha={Alpha} paneNative={PaneNative} hostNative={HostNative}",
+//                 anchor.Name ?? "<unnamed>",
+//                 host.Name ?? "<unnamed>",
+//                 host.Width,
+//                 host.Height,
+//                 _contentPane.Width,
+//                 _contentPane.Height,
+//                 _visibleItems.Count,
+//                 _contentPane.X,
+//                 _contentPane.Y,
+//                 _contentPane.FinalVisible,
+//                 _contentPane.Alpha,
+//                 _contentPane.NativeObject != null,
+//                 host.NativeObject != null);
             _isShown = true;
-            Game.Logger.LogWarning(
-                "[FGUI][POPUP][TRACE][SHOW] end parent={Parent} visible={Visible} final={Final} touchable={Touchable} native={Native}",
-                _contentPane.Parent?.Name ?? "<none>",
-                _contentPane.Visible,
-                _contentPane.FinalVisible,
-                _contentPane.Touchable,
-                _contentPane.NativeObject != null);
+//             Game.Logger.LogWarning(
+//                 "[FGUI][POPUP][TRACE][SHOW] end parent={Parent} visible={Visible} final={Final} touchable={Touchable} native={Native}",
+//                 _contentPane.Parent?.Name ?? "<none>",
+//                 _contentPane.Visible,
+//                 _contentPane.FinalVisible,
+//                 _contentPane.Touchable,
+//                 _contentPane.NativeObject != null);
             return;
         }
 
@@ -3162,13 +3162,13 @@ public class PopupMenu
         _isShown = false;
         if (_contentPane != null)
         {
-            Game.Logger.LogWarning(
-                "[FGUI][POPUP][TRACE][HIDE] begin parent={Parent} visible={Visible} final={Final} touchable={Touchable} native={Native}",
-                _contentPane.Parent?.Name ?? "<none>",
-                _contentPane.Visible,
-                _contentPane.FinalVisible,
-                _contentPane.Touchable,
-                _contentPane.NativeObject != null);
+//             Game.Logger.LogWarning(
+//                 "[FGUI][POPUP][TRACE][HIDE] begin parent={Parent} visible={Visible} final={Final} touchable={Touchable} native={Native}",
+//                 _contentPane.Parent?.Name ?? "<none>",
+//                 _contentPane.Visible,
+//                 _contentPane.FinalVisible,
+//                 _contentPane.Touchable,
+//                 _contentPane.NativeObject != null);
             ReleasePointerRecursive(_contentPane);
             _contentPane.Touchable = false;
             _contentPane.Visible = false;
@@ -3178,13 +3178,13 @@ public class PopupMenu
                 Render.SCERenderContext.Instance.RemoveFromParent(_contentPane);
             }
 
-            Game.Logger.LogWarning(
-                "[FGUI][POPUP][TRACE][HIDE] end parent={Parent} visible={Visible} final={Final} touchable={Touchable} native={Native}",
-                _contentPane.Parent?.Name ?? "<none>",
-                _contentPane.Visible,
-                _contentPane.FinalVisible,
-                _contentPane.Touchable,
-                _contentPane.NativeObject != null);
+//             Game.Logger.LogWarning(
+//                 "[FGUI][POPUP][TRACE][HIDE] end parent={Parent} visible={Visible} final={Final} touchable={Touchable} native={Native}",
+//                 _contentPane.Parent?.Name ?? "<none>",
+//                 _contentPane.Visible,
+//                 _contentPane.FinalVisible,
+//                 _contentPane.Touchable,
+//                 _contentPane.NativeObject != null);
         }
     }
 

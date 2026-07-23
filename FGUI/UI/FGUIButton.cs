@@ -217,9 +217,9 @@ public class GButton : GComponent, IColorGear
                 _buttonController.SelectedIndex = 0;
                 if (EnableButtonDiagLogs)
                 {
-                    Game.Logger.LogInformation(
-                        "[FGUI] Button fallback to page index 0: button={ButtonName}, controller={Controller}",
-                        Name, _buttonController.Name);
+//                     Game.Logger.LogInformation(
+//                         "[FGUI] Button fallback to page index 0: button={ButtonName}, controller={Controller}",
+//                         Name, _buttonController.Name);
                 }
             }
         }
@@ -334,9 +334,9 @@ public class GButton : GComponent, IColorGear
 
         if (EnableButtonDiagLogs)
         {
-            Game.Logger.LogInformation(
-                "[FGUI] Button ConstructExtension: name='{Name}', title='{Title}', titleObjText='{TitleObj}', mode={Mode}, buttonController={ControllerName}, pageCount={PageCount}, childCount={ChildCount}",
-                Name, _title, _titleObject?.Text, _mode, _buttonController?.Name ?? "<none>", _buttonController?.PageCount ?? 0, NumChildren);
+//             Game.Logger.LogInformation(
+//                 "[FGUI] Button ConstructExtension: name='{Name}', title='{Title}', titleObjText='{TitleObj}', mode={Mode}, buttonController={ControllerName}, pageCount={PageCount}, childCount={ChildCount}",
+//                 Name, _title, _titleObject?.Text, _mode, _buttonController?.Name ?? "<none>", _buttonController?.PageCount ?? 0, NumChildren);
         }
     }
 
@@ -375,9 +375,9 @@ public class GButton : GComponent, IColorGear
             _buttonController.SelectedIndex = pageIndex;
             if (EnableButtonDiagLogs)
             {
-                Game.Logger.LogInformation(
-                    "[FGUI] Button state alias mapped: button={ButtonName}, requested={Requested}, alias={Alias}, controller={Controller}, index={Index}",
-                    Name, val, alias, _buttonController.Name, pageIndex);
+//                 Game.Logger.LogInformation(
+//                     "[FGUI] Button state alias mapped: button={ButtonName}, requested={Requested}, alias={Alias}, controller={Controller}, index={Index}",
+//                     Name, val, alias, _buttonController.Name, pageIndex);
             }
             return true;
         }
@@ -406,9 +406,9 @@ public class GButton : GComponent, IColorGear
             {
                 if (EnableButtonDiagLogs)
                 {
-                    Game.Logger.LogInformation(
-                        "[FGUI] Button controller fallback selected: button={ButtonName}, controller={Controller}, pageCount={PageCount}",
-                        Name, controller.Name, controller.PageCount);
+//                     Game.Logger.LogInformation(
+//                         "[FGUI] Button controller fallback selected: button={ButtonName}, controller={Controller}, pageCount={PageCount}",
+//                         Name, controller.Name, controller.PageCount);
                 }
                 return controller;
             }
@@ -742,7 +742,7 @@ public class GButton : GComponent, IColorGear
 
         if (EnableButtonDiagLogs)
         {
-            Game.Logger.LogInformation($"[FGUI] Button Setup_AfterAdd: title='{_title}', selected={_selected}");
+//             Game.Logger.LogInformation($"[FGUI] Button Setup_AfterAdd: title='{_title}', selected={_selected}");
         }
     }
 }

@@ -107,13 +107,13 @@ public static class UIRuntime
     public static void SetControlOnlyImageMode(bool enabled)
     {
         _controlOnlyImageMode = enabled;
-        Game.Logger.LogInformation("[FGUI] ControlOnlyImageMode set to {Enabled}", enabled);
+//         Game.Logger.LogInformation("[FGUI] ControlOnlyImageMode set to {Enabled}", enabled);
     }
 
     public static void SetImageAssetMode(ImageAssetMode mode)
     {
         _imageAssetMode = mode;
-        Game.Logger.LogInformation("[FGUI] ImageAssetMode set to {Mode}", mode);
+//         Game.Logger.LogInformation("[FGUI] ImageAssetMode set to {Mode}", mode);
     }
 
     public static void SetSemanticRootMode(SemanticRootMode mode)
@@ -179,14 +179,14 @@ public static class UIRuntime
         // not from multiplying every control's size/position by a global factor.
         ContentScaleFactor = 1f;
 
-        Game.Logger.LogInformation(
-            "[FGUI] ContentScaleFactor fixed to 1.000 (computed={ComputedScale:F3}, match={MatchMode}, screen={ScreenWidth}x{ScreenHeight}, design={DesignWidth}x{DesignHeight})",
-            computedScale,
-            MatchMode,
-            screenWidth,
-            screenHeight,
-            DesignResolutionX,
-            DesignResolutionY);
+//         Game.Logger.LogInformation(
+//             "[FGUI] ContentScaleFactor fixed to 1.000 (computed={ComputedScale:F3}, match={MatchMode}, screen={ScreenWidth}x{ScreenHeight}, design={DesignWidth}x{DesignHeight})",
+//             computedScale,
+//             MatchMode,
+//             screenWidth,
+//             screenHeight,
+//             DesignResolutionX,
+//             DesignResolutionY);
     }
 
     public static ISCEAdapter? Adapter

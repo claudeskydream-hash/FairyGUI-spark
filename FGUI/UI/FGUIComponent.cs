@@ -537,7 +537,7 @@ public class GComponent : GObject
 
         ConstructFromXML(new XML());
         
-        Game.Logger.LogInformation($"[FGUI] Component parsed: {Name ?? PackageItem?.Name}, Size: {_width}x{_height}, Children: {_children.Count}, Controllers: {_controllers.Count}");
+//         Game.Logger.LogInformation($"[FGUI] Component parsed: {Name ?? PackageItem?.Name}, Size: {_width}x{_height}, Children: {_children.Count}, Controllers: {_controllers.Count}");
     }
 
     public virtual void ConstructFromXML(XML xml) { }

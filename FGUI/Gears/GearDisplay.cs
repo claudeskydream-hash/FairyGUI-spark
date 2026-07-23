@@ -33,23 +33,25 @@ public class GearDisplay : GearBase
         }
 
         if (string.Equals(_owner.Name, "btns", StringComparison.Ordinal))
-            Game.Logger.LogInformation(
-                "[FGUI][GearDisplay][btns] selectedIndex={SelectedIndex} selectedPage={SelectedPage} selectedPageId={SelectedPageId} pages=[{Pages}] visible={Visible}",
-                _controller?.SelectedIndex ?? -1,
-                _controller?.SelectedPage,
-                _controller?.SelectedPageId,
-                string.Join(",", Pages ?? Array.Empty<string>()),
-                _visible);
+//             Game.Logger.LogInformation(
+//                 "[FGUI][GearDisplay][btns] selectedIndex={SelectedIndex} selectedPage={SelectedPage} selectedPageId={SelectedPageId} pages=[{Pages}] visible={Visible}",
+//                 _controller?.SelectedIndex ?? -1,
+//                 _controller?.SelectedPage,
+//                 _controller?.SelectedPageId,
+//                 string.Join(",", Pages ?? Array.Empty<string>()),
+//                 _visible);
+            ;
         
         if (oldVisible != _visible)
-            Game.Logger.LogInformation(
-                "[FGUI] GearDisplay.Apply: {Owner}, controller={Controller}, selectedPage={SelectedPage}, selectedPageId={SelectedPageId}, pages=[{Pages}], visible={Visible}",
-                _owner.Name,
-                _controller?.Name,
-                _controller?.SelectedPage,
-                _controller?.SelectedPageId,
-                string.Join(",", Pages ?? Array.Empty<string>()),
-                _visible);
+//             Game.Logger.LogInformation(
+//                 "[FGUI] GearDisplay.Apply: {Owner}, controller={Controller}, selectedPage={SelectedPage}, selectedPageId={SelectedPageId}, pages=[{Pages}], visible={Visible}",
+//                 _owner.Name,
+//                 _controller?.Name,
+//                 _controller?.SelectedPage,
+//                 _controller?.SelectedPageId,
+//                 string.Join(",", Pages ?? Array.Empty<string>()),
+//                 _visible);
+            ;
     }
 
     public override void UpdateState() { }
@@ -58,10 +60,11 @@ public class GearDisplay : GearBase
     {
         _visible++;
         if (string.Equals(_owner.Name, "btns", StringComparison.Ordinal))
-            Game.Logger.LogInformation(
-                "[FGUI][GearDisplay][btns][LOCK+] token={Token} visible={Visible}",
-                _displayLockToken,
-                _visible);
+//             Game.Logger.LogInformation(
+//                 "[FGUI][GearDisplay][btns][LOCK+] token={Token} visible={Visible}",
+//                 _displayLockToken,
+//                 _visible);
+            ;
         return _displayLockToken;
     }
     public void ReleaseLock(uint token)
@@ -74,12 +77,13 @@ public class GearDisplay : GearBase
         }
 
         if (string.Equals(_owner.Name, "btns", StringComparison.Ordinal))
-            Game.Logger.LogInformation(
-                "[FGUI][GearDisplay][btns][LOCK-] token={Token} currentToken={CurrentToken} released={Released} visible={Visible}",
-                token,
-                _displayLockToken,
-                released,
-                _visible);
+//             Game.Logger.LogInformation(
+//                 "[FGUI][GearDisplay][btns][LOCK-] token={Token} currentToken={CurrentToken} released={Released} visible={Visible}",
+//                 token,
+//                 _displayLockToken,
+//                 released,
+//                 _visible);
+            ;
     }
     public bool Connected => _controller == null || _visible > 0;
 

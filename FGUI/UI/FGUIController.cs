@@ -31,7 +31,7 @@ public class Controller : EventDispatcher
                 _changing = true;
                 _previousIndex = _selectedIndex;
                 _selectedIndex = value;
-                Game.Logger.LogInformation($"[FGUI] Controller '{Name}' changed: {_previousIndex} -> {_selectedIndex}, pageId={SelectedPageId}");
+//                 Game.Logger.LogInformation($"[FGUI] Controller '{Name}' changed: {_previousIndex} -> {_selectedIndex}, pageId={SelectedPageId}");
                 Parent?.ApplyController(this);
                 DispatchEvent("onChange", null);
                 _changing = false;

@@ -185,7 +185,7 @@ public class GTextField : GObject
         if (str != null) 
         {
             Text = str;
-            Game.Logger.LogInformation($"[FGUI] TextField '{Name}' Setup_AfterAdd: text='{str}'");
+//             Game.Logger.LogInformation($"[FGUI] TextField '{Name}' Setup_AfterAdd: text='{str}'");
         }
     }
 
@@ -293,7 +293,7 @@ public class GTextField : GObject
         // 目前依赖SCE Label的自动尺寸功能
         if (_autoSize != AutoSizeType.None)
         {
-            Game.Logger.LogInformation($"[FGUI] TextField '{Name}' AutoSize={_autoSize} - relying on SCE Label auto-sizing");
+//             Game.Logger.LogInformation($"[FGUI] TextField '{Name}' AutoSize={_autoSize} - relying on SCE Label auto-sizing");
         }
     }
 }

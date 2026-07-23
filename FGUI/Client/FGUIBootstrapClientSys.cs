@@ -137,9 +137,9 @@ public sealed class FGUIBootstrapClientSys : IGameClass
 
             rwdList.NumItems = _rowItemCounts.Count;
 
-            Game.Logger.LogInformation(
-                "[FGUI] RwdList 填充完成 Rows={Rows} W={W} H={H} Layout={L} defaultItem={DefaultItem}",
-                rwdList.NumItems, rwdList.Width, rwdList.Height, rwdList.Layout, rwdList.DefaultItem ?? "(空)");
+//             Game.Logger.LogInformation(
+//                 "[FGUI] RwdList 填充完成 Rows={Rows} W={W} H={H} Layout={L} defaultItem={DefaultItem}",
+//                 rwdList.NumItems, rwdList.Width, rwdList.Height, rwdList.Layout, rwdList.DefaultItem ?? "(空)");
 
             // 诊断：确认外层/内层列表是否有 ScrollPane 且内容溢出（决定能否拖动滚动）
             LogScrollDiag("RwdList", rwdList);
@@ -151,7 +151,7 @@ public sealed class FGUIBootstrapClientSys : IGameClass
                 }
                 else
                 {
-                    Game.Logger.LogInformation("[FGUI][Scroll] itemList[0] 未找到内层 GList（row0 子对象里没有名为 itemList 的 GList）");
+//                     Game.Logger.LogInformation("[FGUI][Scroll] itemList[0] 未找到内层 GList（row0 子对象里没有名为 itemList 的 GList）");
                 }
             }
         }
@@ -203,12 +203,12 @@ public sealed class FGUIBootstrapClientSys : IGameClass
 
                 // 循环切到下一页：show ↔ hide，即 xiaohuangren 关一次开一次
                 controller.SelectedIndex = (controller.SelectedIndex + 1) % controller.PageCount;
-                Game.Logger.LogInformation(
-                    "[FGUI] btnAdd 点击 → btnControl 切到 index={Index} page={Page}",
-                    controller.SelectedIndex, controller.SelectedPage);
+//                 Game.Logger.LogInformation(
+//                     "[FGUI] btnAdd 点击 → btnControl 切到 index={Index} page={Page}",
+//                     controller.SelectedIndex, controller.SelectedPage);
             });
 
-            Game.Logger.LogInformation("[FGUI] btnAdd 已绑定，btnControl 页数={PageCount}", controller.PageCount);
+//             Game.Logger.LogInformation("[FGUI] btnAdd 已绑定，btnControl 页数={PageCount}", controller.PageCount);
         }
         catch (Exception ex)
         {
@@ -249,14 +249,14 @@ public sealed class FGUIBootstrapClientSys : IGameClass
                 _itemCellIconLogged = true;
                 var item = UIPackage.GetItemByURL(loader.Url);
                 var content = loader.Content;
-                Game.Logger.LogInformation(
-                    "[FGUI] ItemCell icon 诊断 Url={Url} 解析到Item={HasItem} Type={Type} ItemWH={IW}x{IH} Sprite={HasSprite} Atlas={HasAtlas} | Loader WH={LW}x{LH} Native={LNative} | Content={CType} 源WH={CW}x{CH} ContentNative={CNative}",
-                    loader.Url,
-                    item != null, item?.Type.ToString() ?? "(空)", item?.Width ?? -1, item?.Height ?? -1,
-                    item?.Sprite != null, item?.Sprite?.Atlas != null,
-                    loader.Width, loader.Height, loader.NativeObject != null,
-                    content?.GetType().Name ?? "(空)", content?.SourceWidth ?? -1f, content?.SourceHeight ?? -1f,
-                    content?.NativeObject != null);
+//                 Game.Logger.LogInformation(
+//                     "[FGUI] ItemCell icon 诊断 Url={Url} 解析到Item={HasItem} Type={Type} ItemWH={IW}x{IH} Sprite={HasSprite} Atlas={HasAtlas} | Loader WH={LW}x{LH} Native={LNative} | Content={CType} 源WH={CW}x{CH} ContentNative={CNative}",
+//                     loader.Url,
+//                     item != null, item?.Type.ToString() ?? "(空)", item?.Width ?? -1, item?.Height ?? -1,
+//                     item?.Sprite != null, item?.Sprite?.Atlas != null,
+//                     loader.Width, loader.Height, loader.NativeObject != null,
+//                     content?.GetType().Name ?? "(空)", content?.SourceWidth ?? -1f, content?.SourceHeight ?? -1f,
+//                     content?.NativeObject != null);
             }
         }
     }
@@ -267,17 +267,17 @@ public sealed class FGUIBootstrapClientSys : IGameClass
         var pane = list.ScrollPane;
         if (pane == null)
         {
-            Game.Logger.LogInformation(
-                "[FGUI][Scroll] {Tag} 无 ScrollPane（编辑器里该列表 overflow 需设为 Scroll 才能拖动）", tag);
+//             Game.Logger.LogInformation(
+//                 "[FGUI][Scroll] {Tag} 无 ScrollPane（编辑器里该列表 overflow 需设为 Scroll 才能拖动）", tag);
             return;
         }
 
         var overflowX = MathF.Max(0f, pane.ContentWidth - pane.ViewWidth);
         var overflowY = MathF.Max(0f, pane.ContentHeight - pane.ViewHeight);
-        Game.Logger.LogInformation(
-            "[FGUI][Scroll] {Tag} ScrollType={Type} Content={CW}x{CH} View={VW}x{VH} 溢出X={OX} 溢出Y={OY} 可滚动={Scrollable}",
-            tag, pane.ScrollType, pane.ContentWidth, pane.ContentHeight, pane.ViewWidth, pane.ViewHeight,
-            overflowX, overflowY, overflowX > 0.01f || overflowY > 0.01f);
+//         Game.Logger.LogInformation(
+//             "[FGUI][Scroll] {Tag} ScrollType={Type} Content={CW}x{CH} View={VW}x{VH} 溢出X={OX} 溢出Y={OY} 可滚动={Scrollable}",
+//             tag, pane.ScrollType, pane.ContentWidth, pane.ContentHeight, pane.ViewWidth, pane.ViewHeight,
+//             overflowX, overflowY, overflowX > 0.01f || overflowY > 0.01f);
     }
 
     /// <summary>在组件的直接子对象里找第一个指定类型的对象。</summary>
@@ -303,14 +303,14 @@ public sealed class FGUIBootstrapClientSys : IGameClass
         }
 
         _itemCellDumped = true;
-        Game.Logger.LogInformation("[FGUI] ItemCell 子对象数量={Count}", cell.NumChildren);
+//         Game.Logger.LogInformation("[FGUI] ItemCell 子对象数量={Count}", cell.NumChildren);
         for (int i = 0; i < cell.NumChildren; i++)
         {
             var child = cell.GetChildAt(i);
             var childText = child is GTextField tf ? tf.Text : "(非文本)";
-            Game.Logger.LogInformation(
-                "[FGUI]   [{Index}] Name={Name} Type={Type} Text={Text}",
-                i, child.Name ?? "(空)", child.GetType().Name, childText);
+//             Game.Logger.LogInformation(
+//                 "[FGUI]   [{Index}] Name={Name} Type={Type} Text={Text}",
+//                 i, child.Name ?? "(空)", child.GetType().Name, childText);
         }
     }
 
@@ -386,11 +386,11 @@ public sealed class FGUIBootstrapClientSys : IGameClass
         UIRuntime.SetImageAssetMode(ImageAssetMode.Atlas); // 本项目用图集导出（FGUIProject 二进制+atlas）
         _initialized = true;
         SetRootInputEnabled(false, "bootstrap-init");
-        Game.Logger.LogInformation(
-            "[FGUI] Runtime initialized. design={DesignWidth}x{DesignHeight} match={MatchMode}",
-            designWidth,
-            designHeight,
-            ScreenMatchMode.Fill);
+//         Game.Logger.LogInformation(
+//             "[FGUI] Runtime initialized. design={DesignWidth}x{DesignHeight} match={MatchMode}",
+//             designWidth,
+//             designHeight,
+//             ScreenMatchMode.Fill);
     }
 
     public static void SetRootInputEnabled(bool enabled, string reason = "")
@@ -426,7 +426,7 @@ public sealed class FGUIBootstrapClientSys : IGameClass
         }
 
         UIRuntime.AddToFullScreenRoot(view);
-        Game.Logger.LogInformation("[FGUI] Show component: {Package}/{Component}", packageName, componentName);
+//         Game.Logger.LogInformation("[FGUI] Show component: {Package}/{Component}", packageName, componentName);
         return view;
     }
 
@@ -504,8 +504,8 @@ public sealed class FGUIBootstrapClientSys : IGameClass
                 continue;
             }
 
-            Game.Logger.LogInformation("[FGUI] Component fallback matched: requested={Requested}, actual={Actual}",
-                componentName, item.Name);
+//             Game.Logger.LogInformation("[FGUI] Component fallback matched: requested={Requested}, actual={Actual}",
+//                 componentName, item.Name);
             return fallback;
         }
 
@@ -593,11 +593,11 @@ public sealed class FGUIBootstrapClientSys : IGameClass
         }
 
         UIRuntime.SetContentScaleFactor(designWidth, designHeight, ScreenMatchMode.Fill);
-        Game.Logger.LogInformation(
-            "[FGUI] Design resolution from package applied: {DesignWidth}x{DesignHeight} package={Package}",
-            designWidth,
-            designHeight,
-            pkg.Name);
+//         Game.Logger.LogInformation(
+//             "[FGUI] Design resolution from package applied: {DesignWidth}x{DesignHeight} package={Package}",
+//             designWidth,
+//             designHeight,
+//             pkg.Name);
     }
 
     internal static void ApplyRootSizedLayout(GComponent view, string packageName, string componentName)
@@ -612,20 +612,20 @@ public sealed class FGUIBootstrapClientSys : IGameClass
         // Keep adaptation semantic: root view resized to runtime root, children follow FGUI relations.
         view.SetXY(0f, 0f);
         view.SetSize(rootWidth, rootHeight, true);
-        Game.Logger.LogInformation(
-            "[FGUI][LAYOUT] root-size-apply package={Package} component={Component} root={RootWidth}x{RootHeight} viewBefore={BeforeWidth}x{BeforeHeight}@{BeforeX},{BeforeY} viewAfter={AfterWidth}x{AfterHeight}@{AfterX},{AfterY}",
-            packageName,
-            componentName,
-            rootWidth,
-            rootHeight,
-            beforeWidth,
-            beforeHeight,
-            beforeX,
-            beforeY,
-            view.Width,
-            view.Height,
-            view.X,
-            view.Y);
+//         Game.Logger.LogInformation(
+//             "[FGUI][LAYOUT] root-size-apply package={Package} component={Component} root={RootWidth}x{RootHeight} viewBefore={BeforeWidth}x{BeforeHeight}@{BeforeX},{BeforeY} viewAfter={AfterWidth}x{AfterHeight}@{AfterX},{AfterY}",
+//             packageName,
+//             componentName,
+//             rootWidth,
+//             rootHeight,
+//             beforeWidth,
+//             beforeHeight,
+//             beforeX,
+//             beforeY,
+//             view.Width,
+//             view.Height,
+//             view.X,
+//             view.Y);
     }
 }
 #endif

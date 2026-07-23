@@ -484,8 +484,8 @@ public class SCERenderContext
         atlasPath = "image/ui/" + fileName;
         if (_atlasPathLogged.Add(file!))
         {
-            Game.Logger.LogInformation("[FGUI][ATLAS] 图集解析: rawFile='{Raw}' -> atlasPath='{Path}' region={Region}",
-                file, atlasPath, sprite.Rect);
+//             Game.Logger.LogInformation("[FGUI][ATLAS] 图集解析: rawFile='{Raw}' -> atlasPath='{Path}' region={Region}",
+//                 file, atlasPath, sprite.Rect);
         }
         region = sprite.Rect;
         rotated = sprite.Rotated;

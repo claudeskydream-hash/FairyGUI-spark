@@ -142,7 +142,7 @@ public class UIPackage
 
     private bool LoadPackage(ByteBuffer buffer, string assetNamePrefix)
     {
-        Game.Logger.LogInformation($"[FGUI] LoadPackage: buffer.Length={buffer.Length}");
+//         Game.Logger.LogInformation($"[FGUI] LoadPackage: buffer.Length={buffer.Length}");
         
         if (buffer.ReadUint() != FGUI_MAGIC)
             throw new Exception($"FGUI: old package format found in '{assetNamePrefix}'");
@@ -153,7 +153,7 @@ public class UIPackage
         Id = buffer.ReadString();
         Name = buffer.ReadString();
         
-        Game.Logger.LogInformation($"[FGUI] Package: {Name}, ID: {Id}, Version: {buffer.Version}");
+//         Game.Logger.LogInformation($"[FGUI] Package: {Name}, ID: {Id}, Version: {buffer.Version}");
 
         if (Id != null && _packageInstById.TryGetValue(Id, out var existingPkg))
         {
@@ -263,7 +263,7 @@ public class UIPackage
                     int extension = buffer.ReadByte();
                     pi.ObjectType = extension > 0 ? (ObjectType)extension : ObjectType.Component;
                     pi.RawData = buffer.ReadBuffer();
-                    Game.Logger.LogInformation($"[FGUI] Component: {pi.Name}, RawData.Length={pi.RawData?.Length ?? 0}, StringTable.Length={pi.RawData?.StringTable?.Length ?? 0}");
+//                     Game.Logger.LogInformation($"[FGUI] Component: {pi.Name}, RawData.Length={pi.RawData?.Length ?? 0}, StringTable.Length={pi.RawData?.StringTable?.Length ?? 0}");
                     break;
                 case PackageItemType.Atlas:
                 case PackageItemType.Sound:
@@ -421,7 +421,7 @@ public class UIPackage
         // The actual image will be loaded by SCE using path like "image/ui/xxx.png"
         if (item.File == null) return;
         item.TextureData = new byte[0]; // Mark as loaded (non-null)
-        Game.Logger.LogInformation($"[FGUI] Atlas marked as loaded: {item.File}");
+//         Game.Logger.LogInformation($"[FGUI] Atlas marked as loaded: {item.File}");
     }
 
     private void LoadImage(PackageItem item)

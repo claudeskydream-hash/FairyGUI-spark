@@ -327,11 +327,12 @@ public class GObject : EventDispatcher
         if (_gears[8] is GearDisplay2 gd2)
             connected = gd2.Evaluate(connected);
         if (string.Equals(Name, "btns", StringComparison.Ordinal))
-            Game.Logger.LogInformation(
-                "[FGUI][GearDisplay][btns][CHECK] connected={Connected} internalVisible={InternalVisible} finalVisible={FinalVisible}",
-                connected,
-                _internalVisible,
-                FinalVisible);
+//             Game.Logger.LogInformation(
+//                 "[FGUI][GearDisplay][btns][CHECK] connected={Connected} internalVisible={InternalVisible} finalVisible={FinalVisible}",
+//                 connected,
+//                 _internalVisible,
+//                 FinalVisible);
+            ;
         if (connected != _internalVisible)
         {
             _internalVisible = connected;
@@ -543,11 +544,11 @@ public class GObject : EventDispatcher
             {
                 adapter.CapturePointer(_nativeObject);
                 _isPointerCaptured = true;
-                Game.Logger.LogInformation($"[FGUI] Drag started: obj=({startObjX},{startObjY}), touch=({pressX},{pressY})");
+//                 Game.Logger.LogInformation($"[FGUI] Drag started: obj=({startObjX},{startObjY}), touch=({pressX},{pressY})");
             }
             else
             {
-                Game.Logger.LogInformation($"[FGUI] Drag prevented by user");
+//                 Game.Logger.LogInformation($"[FGUI] Drag prevented by user");
             }
         });
         
@@ -591,7 +592,7 @@ public class GObject : EventDispatcher
                 
                 // 触发拖拽结束事件
                 DispatchEvent("onDragEnd", null);
-                Game.Logger.LogInformation($"[FGUI] Drag ended: obj=({_x},{_y})");
+//                 Game.Logger.LogInformation($"[FGUI] Drag ended: obj=({_x},{_y})");
             }
         });
     }

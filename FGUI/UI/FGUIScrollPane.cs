@@ -743,10 +743,10 @@ public class ScrollPane
         _isHolding = false;
 
         // 诊断：松手时的速度/惯性开关，用于定位"惯性很小/没变化"
-        Game.Logger.LogInformation(
-            "[FGUI][Scroll] OnTouchEnd velX={VX} velY={VY} 阈值={Th} inertiaDisabled={Dis} 距离系数={Fac} 时长上限={Dur}",
-            _velocityX, _velocityY, INERTIA_VELOCITY_THRESHOLD, _inertiaDisabled,
-            INERTIA_DISTANCE_FACTOR, SCROLL_ANIM_MAX_DURATION);
+//         Game.Logger.LogInformation(
+//             "[FGUI][Scroll] OnTouchEnd velX={VX} velY={VY} 阈值={Th} inertiaDisabled={Dis} 距离系数={Fac} 时长上限={Dur}",
+//             _velocityX, _velocityY, INERTIA_VELOCITY_THRESHOLD, _inertiaDisabled,
+//             INERTIA_DISTANCE_FACTOR, SCROLL_ANIM_MAX_DURATION);
 
         // Check for pull to refresh
         // 注意：事件触发不依赖于 _header/_footer 是否存在，用户可能只注册事件

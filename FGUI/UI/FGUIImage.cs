@@ -501,7 +501,7 @@ public class GGraph : GObject, IColorGear
             // Apply the shape drawing after parsing - this triggers display updates
             if (_width > 0 && _height > 0)
             {
-                Game.Logger.LogInformation($"[FGUI] Graph '{Name}' Setup_BeforeAdd: type={_type}, size=({_width}x{_height}), fillColor={_fillColor}");
+//                 Game.Logger.LogInformation($"[FGUI] Graph '{Name}' Setup_BeforeAdd: type={_type}, size=({_width}x{_height}), fillColor={_fillColor}");
             }
         }
     }

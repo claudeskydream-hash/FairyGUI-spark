@@ -90,9 +90,9 @@ internal static class FGUIScatterManifest
         if (TryReloadMovieClipManifest() && MovieClipMapping.TryGetValue(key, out path))
         {
             imagePath = path;
-            Game.Logger.LogInformation(
-                "[FGUI][SCATTER][MOVIECLIP] resolved after manifest reload packageId={PackageId} clipItemId={ClipItemId} frameIndex={FrameIndex}",
-                packageId, clipItemId, frameIndex);
+//             Game.Logger.LogInformation(
+//                 "[FGUI][SCATTER][MOVIECLIP] resolved after manifest reload packageId={PackageId} clipItemId={ClipItemId} frameIndex={FrameIndex}",
+//                 packageId, clipItemId, frameIndex);
             return true;
         }
 
@@ -195,7 +195,7 @@ internal static class FGUIScatterManifest
         }
 
         _manifestAvailable = true;
-        Game.Logger.LogInformation("[FGUI][SCATTER] manifest loaded entries={Count}", Mapping.Count);
+//         Game.Logger.LogInformation("[FGUI][SCATTER] manifest loaded entries={Count}", Mapping.Count);
     }
 
     private static void LoadMovieClipManifest()
@@ -277,7 +277,7 @@ internal static class FGUIScatterManifest
 
         _movieClipManifestAvailable = true;
         _movieClipManifestUnavailableLogged = false;
-        Game.Logger.LogInformation("[FGUI][SCATTER][MOVIECLIP] manifest loaded entries={Count}", MovieClipMapping.Count);
+//         Game.Logger.LogInformation("[FGUI][SCATTER][MOVIECLIP] manifest loaded entries={Count}", MovieClipMapping.Count);
     }
 
     private static bool TryReloadMovieClipManifest()
