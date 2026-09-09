@@ -224,20 +224,6 @@ public class GButton : GComponent, IColorGear
             }
         }
 
-        // CloseButton 在 SCE 里优先保证“按下缩小”触感，不依赖导出 downEffect 配置。
-        if (IsCloseButton())
-        {
-            if (_suppressDownEffectScale)
-            {
-                ResetDownScaleIfNeeded();
-            }
-            else
-            {
-                ApplyDownScaleByState(val, ResolveDownScaleFactor());
-            }
-            return;
-        }
-
         if (_downEffect == 1)
         {
             float v = _downEffectValue;
@@ -430,23 +416,17 @@ public class GButton : GComponent, IColorGear
                itemName.Contains("close", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// 按下缩放的倍率:直接用 FGUI 编辑器导出的 downEffectValue。
+    /// 这里只兜非法值(NaN/∞/≤0),以及夹一个宽到不会误伤正常配置的上下限;
+    /// 不按按钮名字改倍率 —— 编辑器里配多少就是多少。
+    /// </summary>
     private float ResolveDownScaleFactor()
     {
         var factor = _downEffectValue;
         if (!float.IsFinite(factor) || factor <= 0f)
         {
             factor = 0.8f;
-        }
-
-        if (IsCloseButton())
-        {
-            if (factor >= 1f)
-            {
-                factor = 1f / MathF.Max(1.0001f, factor);
-            }
-
-            // 统一 close button 的触感：按下为缩小，不允许放大。
-            return Math.Clamp(factor, 0.5f, 0.95f);
         }
 
         return Math.Clamp(factor, 0.05f, 4f);

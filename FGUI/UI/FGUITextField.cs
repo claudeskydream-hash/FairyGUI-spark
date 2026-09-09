@@ -260,6 +260,11 @@ public class GTextField : GObject
         };
         adapter.SetTextVerticalAlign(NativeObject, vertAlign);
 
+        // 单行：FGUI 的 singleLine 对应引擎 Label 的「不自动换行」。
+        // 按钮标题尤其依赖它 —— title 文本框在编辑器里通常只留一点点宽度，靠居中关联撑开，
+        // 不关掉换行的话「开始游戏」这种四字标题会被折成两行。
+        adapter.SetTextWrap(NativeObject, !_singleLine);
+
         // 描边：引擎原生支持，直接套用（无描边时显式清零，避免控件复用残留）
         if (_strokeColor.HasValue)
             adapter.SetTextStroke(NativeObject, _strokeColor.Value, _strokeSize);

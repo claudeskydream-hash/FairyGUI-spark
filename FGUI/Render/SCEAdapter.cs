@@ -45,6 +45,8 @@ public class SCEAdapter : ISCEAdapter
     // Base rectangles for panel-subtree fallback scaling (button downEffect=scale).
     private readonly Dictionary<object, RectangleF> _fallbackScaleBaseRects = new();
     private readonly HashSet<object> _fallbackScaleActiveRoots = new();
+    // 缩放前的字号基准:Label 的字号不随控件 Size 变化,缩放时要按比例改、恢复时要还原。
+    private readonly Dictionary<object, float> _fallbackScaleBaseFontSizes = new();
     // Track last visible/alpha set through adapter.
     private readonly Dictionary<object, bool> _controlVisibleStates = new();
     private readonly Dictionary<object, float> _controlAlphaStates = new();
@@ -415,9 +417,16 @@ public class SCEAdapter : ISCEAdapter
         var targetWidth = MathF.Max(1f, baseSize.Width * safeScaleX);
         var targetHeight = MathF.Max(1f, baseSize.Height * safeScaleY);
 
-        var basePos = _controlPositions.TryGetValue(control, out var trackedPos)
-            ? trackedPos
-            : ResolveControlPosition(c);
+        // 基准位置必须是「未缩放时」的位置，且只能确定一次。
+        // 控件在 FGUI 里的 xy 就是 (0,0) 时（按钮内的 icon 几乎都是），GObject.SetPosition 的
+        // 相等判断会让位置变更从不派发，于是 SetPosition 从没记录过它 —— 只能在这里现场读一次。
+        // 读完必须记下来：否则下一次缩放读到的是上一次居中补偿后的位置，把它again当基准，
+        // 每缩放一轮就往右下累积半个尺寸差，表现为「轴心不在中间、按钮越点越偏」。
+        if (!_controlPositions.TryGetValue(control, out var basePos))
+        {
+            basePos = ResolveControlPosition(c);
+            TrackControlPosition(control, basePos.X, basePos.Y);
+        }
 
         if (c is Panel &&
             TryApplyPanelSubtreeScaleFallback(control, basePos, baseSize, scaleX, scaleY))
@@ -522,6 +531,11 @@ public class SCEAdapter : ISCEAdapter
 
             nodeControl.Position(scaledX, scaledY);
             nodeControl.Size(scaledWidth, scaledHeight);
+
+            // 只改 Position/Size 不足以让画面缩小:Canvas 上的图是按「画那一刻的尺寸」
+            // 一次性画进去的,Label 的字号也不随控件尺寸走。不同步这两样,按下就只剩位移,
+            // 看起来就是「往右下角偏移而不是居中缩小」。
+            ApplyScaledContent(node, nodeControl, scaledWidth, scaledHeight, safeScaleX, safeScaleY);
         }
 
         _fallbackScaleActiveRoots.Add(rootControl);
@@ -594,6 +608,62 @@ public class SCEAdapter : ISCEAdapter
 
             control.Position(baseRect.X, baseRect.Y);
             control.Size(baseRect.Width, baseRect.Height);
+            RestoreScaledContent(node, control, baseRect.Width, baseRect.Height);
+        }
+    }
+
+    /// <summary>
+    /// 把 fallback 缩放同步到「真正被画出来的东西」上:渲染尺寸、Label 字号、Canvas 重绘。
+    /// </summary>
+    private void ApplyScaledContent(
+        object node,
+        Control control,
+        float scaledWidth,
+        float scaledHeight,
+        float scaleX,
+        float scaleY)
+    {
+        // ResolveRenderSize 依次读 _requestedControlSizes → _controlSizes → 控件属性,
+        // 后者覆盖前者。fallback 直接调控件 Size() 绕开了 Adapter.SetSize,两个字典都不会更新,
+        // 只补 _requestedControlSizes 会被 _controlSizes 里的旧值盖回去,所以两个都要写。
+        _requestedControlSizes[node] = new SizeF(scaledWidth, scaledHeight);
+        _controlSizes[node] = new SizeF(scaledWidth, scaledHeight);
+
+        if (control is Label label)
+        {
+            if (!_fallbackScaleBaseFontSizes.TryGetValue(node, out var baseFontSize))
+            {
+                baseFontSize = label.FontSize;
+                _fallbackScaleBaseFontSizes[node] = baseFontSize;
+            }
+
+            var scaledFontSize = baseFontSize * MathF.Min(scaleX, scaleY);
+            label.FontSize = MathF.Max(1f, scaledFontSize);
+        }
+
+        if (control is Canvas canvas && _canvasImageStates.TryGetValue(canvas, out var canvasState))
+        {
+            RenderCanvasImage(canvas, canvasState);
+        }
+    }
+
+    /// <summary>
+    /// <see cref="ApplyScaledContent"/> 的逆操作:抬手复位时把渲染尺寸、字号还原并重画。
+    /// </summary>
+    private void RestoreScaledContent(object node, Control control, float baseWidth, float baseHeight)
+    {
+        _requestedControlSizes[node] = new SizeF(baseWidth, baseHeight);
+        _controlSizes[node] = new SizeF(baseWidth, baseHeight);
+
+        if (control is Label label && _fallbackScaleBaseFontSizes.TryGetValue(node, out var baseFontSize))
+        {
+            label.FontSize = baseFontSize;
+            _fallbackScaleBaseFontSizes.Remove(node);
+        }
+
+        if (control is Canvas canvas && _canvasImageStates.TryGetValue(canvas, out var canvasState))
+        {
+            RenderCanvasImage(canvas, canvasState);
         }
     }
 
@@ -1034,6 +1104,14 @@ public class SCEAdapter : ISCEAdapter
             input.TextColor = color;
         else if (control is Label label)
             label.TextColor = color;
+    }
+
+    public void SetTextWrap(object control, bool wrap)
+    {
+        if (control is Label label)
+        {
+            label.TextWrap = wrap;
+        }
     }
 
     public void SetTextStroke(object control, Color color, float size)
@@ -1514,41 +1592,49 @@ public class SCEAdapter : ISCEAdapter
 
         var state = new CanvasImageRenderState();
         _canvasImageStates[canvas] = state;
-        canvas.OnRender += (sender, e) =>
-        {
-            canvas.ResetState();
-            switch (state.RenderMode)
-            {
-                case CanvasRenderMode.FilledEllipse:
-                    DrawFilledEllipse(canvas, state);
-                    break;
-                case CanvasRenderMode.AtlasRegion:
-                    if (!state.CurrentImage.HasValue)
-                    {
-                        return;
-                    }
-
-                    DrawAtlasRegion(canvas, state.CurrentImage.Value, state);
-                    break;
-                case CanvasRenderMode.AtlasSliced:
-                    if (!state.CurrentImage.HasValue)
-                    {
-                        return;
-                    }
-
-                    DrawAtlasSliced(canvas, state.CurrentImage.Value, state);
-                    break;
-                default:
-                    if (!state.CurrentImage.HasValue)
-                    {
-                        return;
-                    }
-
-                    DrawPlainImage(canvas, state.CurrentImage.Value);
-                    break;
-            }
-        };
+        canvas.OnRender += (sender, e) => RenderCanvasImage(canvas, state);
         return state;
+    }
+
+    /// <summary>
+    /// 按 Canvas 的当前渲染尺寸重画它的图。
+    /// 抽出来是因为缩放时必须能「立即」重画一次:目标矩形取自
+    /// <see cref="ResolveRenderSize"/>(读 <c>_requestedControlSizes</c>),
+    /// 只改控件 Size 而不重画,画面上的图仍是旧尺寸。
+    /// </summary>
+    private void RenderCanvasImage(Canvas canvas, CanvasImageRenderState state)
+    {
+        canvas.ResetState();
+        switch (state.RenderMode)
+        {
+            case CanvasRenderMode.FilledEllipse:
+                DrawFilledEllipse(canvas, state);
+                break;
+            case CanvasRenderMode.AtlasRegion:
+                if (!state.CurrentImage.HasValue)
+                {
+                    return;
+                }
+
+                DrawAtlasRegion(canvas, state.CurrentImage.Value, state);
+                break;
+            case CanvasRenderMode.AtlasSliced:
+                if (!state.CurrentImage.HasValue)
+                {
+                    return;
+                }
+
+                DrawAtlasSliced(canvas, state.CurrentImage.Value, state);
+                break;
+            default:
+                if (!state.CurrentImage.HasValue)
+                {
+                    return;
+                }
+
+                DrawPlainImage(canvas, state.CurrentImage.Value);
+                break;
+        }
     }
 
     private void DrawFilledEllipse(Canvas canvas, CanvasImageRenderState state)

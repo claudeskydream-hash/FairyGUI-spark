@@ -59,6 +59,11 @@ public interface ISCEAdapter
     void SetItalic(object control, bool italic);
     void SetTextAlign(object control, TextAlign align);
     void SetTextVerticalAlign(object control, TextVerticalAlign align);
+    /// <summary>
+    /// 设置文字是否自动换行。对应 FGUI 的 <c>singleLine</c>（单行 = 不换行）。
+    /// 按钮标题这类文本框宽度往往小于文字实际宽度，不关掉换行就会被折成多行。
+    /// </summary>
+    void SetTextWrap(object control, bool wrap);
     /// <summary>设置文字描边（size&lt;=0 表示关闭）。</summary>
     void SetTextStroke(object control, Color color, float size);
     /// <summary>设置文字阴影（offset 为像素偏移，Transparent/零偏移表示关闭）。</summary>
