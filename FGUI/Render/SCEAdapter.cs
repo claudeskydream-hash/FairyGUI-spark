@@ -2820,6 +2820,24 @@ public class SCEAdapter : ISCEAdapter
 
     public void RemoveFromParent(object control)
     {
+        // 有裁剪外壳的滚动面板：挂在父级下的是外壳，要摘的也是外壳(同 AddChild / RemoveChild)。
+        //
+        // 这里是"从父级取下"而不是销毁，所以面板继续留在外壳内、映射也保留 ——
+        // 下次挂回去还得靠这层外壳裁剪过界内容。若走下面那条通用路径，
+        // ClearHierarchyTracking 会把 _scrollClipHost 映射一并删掉，列表再显示时
+        // 就成了没有外壳的裸面板，滚动过界的内容会溢出容器。
+        //
+        // 这条路径很容易走到：把列表设成不可见(控制器切页、Gear 显示)时，
+        // GComponent.ChildStateChanged 走的就是 RemoveFromParent。
+        // 销毁另有 Dispose 自己的外壳回收，不经过这里。
+        if (_scrollClipHost.TryGetValue(control, out var host))
+        {
+            host.RemoveFromParent();
+            _attachedParentByChild.Remove(host);
+            _attachedParentByChild.Remove(control);
+            return;
+        }
+
         if (control is Control c)
         {
             c.RemoveFromParent();
