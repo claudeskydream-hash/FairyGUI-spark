@@ -21,6 +21,39 @@ public class SCERenderContext
     private readonly HashSet<object> _boundButtonNative = [];
     private readonly HashSet<object> _boundButtonRelayNative = [];
     private readonly HashSet<object> _boundGenericClickNative = [];
+
+    /// <summary>
+    /// 本次指针交互里已经派发过 onClick 的对象。<b>一次交互，一个对象只派发一次。</b>
+    ///
+    /// 同一次物理点击会从多条路一起打到同一个对象上：
+    /// 一是 GComponent 里往往铺着多个重叠子控件(底图、图标、文字)，它们自己没有 touch 监听，
+    /// <b>每一个都会把点击转发给同一个祖先</b>(见 <c>ResolveTouchRelayTarget</c>)；
+    /// 二是祖先若自带命中面(GButton)，它自己那份 click 也会触发。
+    /// 不挡的话业务回调要跑好几遍 —— <c>FGUIButton.HandleClick</c> 里那个 60ms 去重窗口
+    /// 挡的就是这个，但它只保护按钮自身的 Selected 翻转，业务回调照样重复。
+    ///
+    /// <b>不能改成"祖先自己绑了 click 就不转发"</b>：普通 GComponent 是透明容器，
+    /// SCE 里收不到点击（只有 <c>ApplyButtonProperties</c> 会给 GButton 铺一层命中面），
+    /// 它那份 click 绑了也永不触发，挡掉转发就等于整个点不动了。
+    ///
+    /// 交互边界取 press：一次新的按下必然意味着新的交互，而 press 一定早于 click，
+    /// 所以连点、双击都不会被误挡。
+    /// </summary>
+    private readonly HashSet<GObject> _clickDispatchedInGesture = [];
+
+    /// <summary>
+    /// 本次指针交互已经被判定为"滑动"，松手时不该再算点击。
+    ///
+    /// SCE 对点击的定义是<b>在同一个控件上按下再释放</b>，中间移动多远都不管 ——
+    /// 所以在列表上滑动一下选内容，松手时指针仍停在某一项上，那一项照样收到 click，
+    /// 表现为"滑一下就误选"。FGUI 原版靠按下点与松手点的距离区分两者，这里补上。
+    ///
+    /// 判定直接复用滚动桥自己的 <c>drag.Decided</c>(见 <c>ScrollDirectionThreshold</c>)，
+    /// 不另立阈值：那本来就是"这次是滑动不是点击"的分界，两处各判一次迟早会不一致。
+    ///
+    /// 保持到<b>下一次按下</b>才清零：click 是松手之后才派发的，松手即清会来不及。
+    /// </summary>
+    private bool _gestureDragged;
     private readonly HashSet<object> _boundTouchNative = [];
     private readonly HashSet<object> _boundScrollableNative = [];
     private readonly HashSet<object> _boundScrollablePointerNative = [];
@@ -657,6 +690,11 @@ public class SCERenderContext
                     System.GC.KeepAlive(0);
                 }
 
+                if (_gestureDragged || !_clickDispatchedInGesture.Add(button))
+                {
+                    return;
+                }
+
                 button.DispatchEvent("onClick", null);
             });
             _adapter.OnPointerEnter(native, () => button.DispatchEvent("onRollOver", null));
@@ -702,6 +740,11 @@ public class SCERenderContext
             {
                 System.GC.KeepAlive(0);
             }
+
+            // 新的一次按下 = 新的一次交互，把上一次的派发记录和滑动标记都清掉。
+            // 同一次按下会被多个重叠子控件各收一遍，重复清无害。
+            _clickDispatchedInGesture.Clear();
+            _gestureDragged = false;
 
             var beginPoint = new PointF(x, y);
             var beginContext = new EventContext
@@ -803,6 +846,20 @@ public class SCERenderContext
                     System.GC.KeepAlive(0);
                 }
 
+                if (_gestureDragged)
+                {
+                    return;
+                }
+
+                // 同一次交互里这个祖先已经收到过转发就不再转发。
+                // 一个 cell 里底图、图标、文字都会各转发一次，不挡的话业务回调要跑好几遍：
+                // 幂等的回调（开个页面）看着正常，开关类的回调则"开了又关"，
+                // 而真正危险的是像建造摆放那样第二遍会把刚建好的原生对象销毁重建 —— 直接崩进程。
+                if (!_clickDispatchedInGesture.Add(relayTarget))
+                {
+                    return;
+                }
+
                 relayTarget.DispatchEvent("onClick", null);
             });
             _adapter.OnPointerEnter(native, () => relayTarget.DispatchEvent("onRollOver", null));
@@ -817,12 +874,18 @@ public class SCERenderContext
                     System.GC.KeepAlive(0);
                 }
 
+                if (_gestureDragged || !_clickDispatchedInGesture.Add(obj))
+                {
+                    return;
+                }
+
                 obj.DispatchEvent("onClick", null);
             });
             _adapter.OnPointerEnter(native, () => obj.DispatchEvent("onRollOver", null));
             _adapter.OnPointerLeave(native, () => obj.DispatchEvent("onRollOut", null));
         }
     }
+
 
     private static bool ShouldBindTouchEvents(GObject obj, GObject? relayTarget)
     {
@@ -1136,6 +1199,10 @@ public class SCERenderContext
                         }
 
                         drag.Decided = true;
+
+                        // 这一刻起本次交互算"滑动"了，松手时那一项不该再收到点击。
+                        _gestureDragged = true;
+
                         drag.ActivePane.OnTouchBegin(drag.StartX, drag.StartY);
                     }
 

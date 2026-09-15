@@ -1417,6 +1417,19 @@ public class SCEAdapter : ISCEAdapter
 
     public void SetZIndex(object control, int zIndex)
     {
+        if (_scrollClipHost.TryGetValue(control, out var host))
+        {
+            // 有裁剪外壳：挂在父级下、真正参与同级前后排序的是外壳，不是滚动面板本身
+            // （同 SetPosition / SetSize / AddChild 的处理）。
+            //
+            // 只设面板自己的 Z 等于设在一个只有它一个孩子的容器里，对外毫无作用：
+            // 外壳的 Z 始终停在默认值 0，于是同级里任何设过 Z 的兄弟（哪怕排在列表前面、
+            // 本该在下层的底板图）都会盖住整个列表。而从 FGUI 侧回读 Z 拿到的是面板那份、
+            // 看着完全正常 —— 这个不一致让它极难排查。
+            host.ZIndex(zIndex);
+            return;
+        }
+
         if (control is Control c)
             c.ZIndex(zIndex);
     }
