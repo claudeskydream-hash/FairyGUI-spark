@@ -102,6 +102,9 @@ public class GObject : EventDispatcher
     public float Width { get => _width; set => SetSize(value, _rawHeight); }
     public float Height { get => _height; set => SetSize(_rawWidth, value); }
     public SizeF Size { get => new(_width, _height); set => SetSize(value.Width, value.Height); }
+    /// <summary>Size before Min/Max clamping (what the Width/Height setters keep for the other axis).</summary>
+    internal float RawWidth => _rawWidth;
+    internal float RawHeight => _rawHeight;
     public float ActualWidth => _width * _scaleX;
     public float ActualHeight => _height * _scaleY;
 

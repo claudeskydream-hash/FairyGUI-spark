@@ -103,8 +103,17 @@ public class GearDisplay : GearBase
         {
             var page = pages[i];
             if (string.Equals(page, selectedPageId, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(page, selectedPage, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(page, selectedIndexToken, StringComparison.OrdinalIgnoreCase))
+                || string.Equals(page, selectedPage, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            // Index fallback only for tokens that are not a real page id of this controller.
+            // FGUI stores gear pages as page ids, and ids need not follow page order
+            // (e.g. pages="1,hide,0,show"): matching "0" against index 0 there would
+            // light the gear on the wrong page.
+            if (controller.GetPageIndexById(page) < 0
+                && string.Equals(page, selectedIndexToken, StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }

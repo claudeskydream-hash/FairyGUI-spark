@@ -410,17 +410,20 @@ public class RelationItem
                 else if (info.Type == RelationType.Bottom_Bottom)
                     _owner.Y += delta * (1 - pivot);
                 break;
+            // Size relations resize with ignorePivot = true (same as official FairyGUI):
+            // a child with pivot 0.5,0.5 and width-width to its parent must stay at its
+            // position, not slide by pivot * delta (button icons drifted sideways).
             case RelationType.Width:
                 if (_target == _owner.Parent)
-                    _owner.Width = _target.Width + (_owner.Width - _targetData.w) * (info.Percent ? delta : 1);
+                    _owner.SetSize(_target.Width + (_owner.Width - _targetData.w) * (info.Percent ? delta : 1), _owner.RawHeight, true);
                 else
-                    _owner.Width = _target.Width + (_owner.Width - _targetData.w);
+                    _owner.SetSize(_target.Width + (_owner.Width - _targetData.w), _owner.RawHeight, true);
                 break;
             case RelationType.Height:
                 if (_target == _owner.Parent)
-                    _owner.Height = _target.Height + (_owner.Height - _targetData.h) * (info.Percent ? delta : 1);
+                    _owner.SetSize(_owner.RawWidth, _target.Height + (_owner.Height - _targetData.h) * (info.Percent ? delta : 1), true);
                 else
-                    _owner.Height = _target.Height + (_owner.Height - _targetData.h);
+                    _owner.SetSize(_owner.RawWidth, _target.Height + (_owner.Height - _targetData.h), true);
                 break;
         }
     }

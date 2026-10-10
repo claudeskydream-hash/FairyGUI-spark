@@ -115,6 +115,13 @@ public class SCEAdapter : ISCEAdapter
         public Image? CurrentImage { get; set; }
         public CanvasRenderMode RenderMode { get; set; } = CanvasRenderMode.PlainImage;
         public RectangleF SourceRegion { get; set; } = RectangleF.Empty;
+
+        /// <summary>裁剪透明边后内容在原始图里的偏移；与 <see cref="TrimOriginalSize"/> 一起用，原始尺寸为空表示没裁。</summary>
+        public PointF TrimOffset { get; set; }
+
+        /// <summary>裁剪前的原始图尺寸。</summary>
+        public SizeF TrimOriginalSize { get; set; }
+
         public bool Rotated { get; set; }
         public AtlasSlicedRenderState? AtlasSliced { get; set; }
         public Color FillColor { get; set; } = Color.Transparent;
@@ -993,6 +1000,8 @@ public class SCEAdapter : ISCEAdapter
             state.CurrentImage = image;
             state.RenderMode = CanvasRenderMode.AtlasRegion;
             state.SourceRegion = region;
+            state.TrimOffset = PointF.Empty;
+            state.TrimOriginalSize = SizeF.Empty;
             state.Rotated = rotated;
             state.AtlasSliced = null;
             state.FillColor = Color.Transparent;
@@ -1705,6 +1714,27 @@ public class SCEAdapter : ISCEAdapter
         canvas.DrawImage(image, 0f, 0f, destWidth, destHeight);
     }
 
+    /// <summary>
+    /// 给刚 <see cref="SetImageRegion"/> 过的控件补上裁剪信息（图集里裁掉透明边的图）。
+    /// 原始尺寸与图集区域一样大时视为没裁，什么也不做。
+    /// </summary>
+    public void SetImageRegionTrim(object control, PointF offset, SizeF originalSize)
+    {
+        if (control is not Canvas canvas || !_canvasImageStates.TryGetValue(canvas, out var state)
+            || state.RenderMode != CanvasRenderMode.AtlasRegion)
+        {
+            return;
+        }
+
+        bool trimmed = IsPositiveFinite(originalSize.Width) && IsPositiveFinite(originalSize.Height)
+            && (offset.X != 0f || offset.Y != 0f
+                || MathF.Abs(originalSize.Width - state.SourceRegion.Width) > 0.5f
+                || MathF.Abs(originalSize.Height - state.SourceRegion.Height) > 0.5f);
+
+        state.TrimOffset = trimmed ? offset : PointF.Empty;
+        state.TrimOriginalSize = trimmed ? originalSize : SizeF.Empty;
+    }
+
     private void DrawAtlasRegion(Canvas canvas, Image image, CanvasImageRenderState state)
     {
         var region = state.SourceRegion;
@@ -1725,6 +1755,16 @@ public class SCEAdapter : ISCEAdapter
         }
 
         var destRect = new RectangleF(0, 0, destWidth, destHeight);
+
+        // 裁过透明边的图：控件尺寸对应的是原始图，内容只占其中 (偏移, 区域尺寸) 那一块，按比例放回去。
+        var original = state.TrimOriginalSize;
+        if (IsPositiveFinite(original.Width) && IsPositiveFinite(original.Height))
+        {
+            float kx = destWidth / original.Width;
+            float ky = destHeight / original.Height;
+            destRect = new RectangleF(state.TrimOffset.X * kx, state.TrimOffset.Y * ky, region.Width * kx, region.Height * ky);
+        }
+
         if (!IsPositiveFinite(destRect.Width) || !IsPositiveFinite(destRect.Height))
         {
             LogInvalidDrawDiag($"[FGUI][DRAW-GUARD] skip DrawAtlasRegion due invalid destRect image={state.ResolvedPath} destRect={destRect} region={region}");
@@ -1792,29 +1832,148 @@ public class SCEAdapter : ISCEAdapter
 
         static bool CanDraw(float w, float h) => IsPositiveFinite(w) && IsPositiveFinite(h) && w >= MinCanvasDrawSize && h >= MinCanvasDrawSize;
 
-        var rightX = renderWidth - drawRight;
-        var bottomY = renderHeight - drawBottom;
+        // 接缝处理：画布最终按屏幕缩放（如 1080 设计宽画在 477 设备像素上），切分线落在小数设备像素上时，
+        // 相邻两块在接缝像素各盖一部分：不透明图会透出底色成浅线，半透明图如果改成互相多叠又会叠深成黑线。
+        // 所以把 4 条切分线吸附到整数设备像素：相邻块共用同一条像素边界，不留缝也不重叠，半透明图同样干净。
+        // 要按<b>屏幕绝对坐标</b>吸附：控件起点本身常落在小数像素上（设计坐标 42 × 0.44 = 18.55），
+        // 只按控件本地坐标取整，加上起点后仍是小数。
+        var map = DevicePixelMapping(canvas, renderWidth, renderHeight);
+        float SnapX(float v) => (MathF.Round(map.OriginX + v * map.ScaleX) - map.OriginX) / map.ScaleX;
+        float SnapY(float v) => (MathF.Round(map.OriginY + v * map.ScaleY) - map.OriginY) / map.ScaleY;
 
-        if (CanDraw(drawLeft, drawTop))
-            canvas.DrawImage(image, sx, sy, drawLeft, drawTop, 0, 0, drawLeft, drawTop);
-        if (CanDraw(srcCenterW, drawTop) && CanDraw(dstCenterW, drawTop))
-            canvas.DrawImage(image, sx + safeLeft, sy, srcCenterW, drawTop, drawLeft, 0, dstCenterW, drawTop);
-        if (CanDraw(drawRight, drawTop))
-            canvas.DrawImage(image, sx + sw - drawRight, sy, drawRight, drawTop, rightX, 0, drawRight, drawTop);
+        var x1 = SnapX(drawLeft);
+        var x2 = MathF.Max(x1, SnapX(renderWidth - drawRight));
+        var y1 = SnapY(drawTop);
+        var y2 = MathF.Max(y1, SnapY(renderHeight - drawBottom));
+        float dstLeft = x1, dstCenterWidth = x2 - x1, dstRight = renderWidth - x2;
+        float dstTop = y1, dstCenterHeight = y2 - y1, dstBottom = renderHeight - y2;
 
-        if (CanDraw(drawLeft, srcCenterH) && CanDraw(drawLeft, dstCenterH))
-            canvas.DrawImage(image, sx, sy + safeTop, drawLeft, srcCenterH, 0, drawTop, drawLeft, dstCenterH);
-        if (CanDraw(srcCenterW, srcCenterH) && CanDraw(dstCenterW, dstCenterH))
-            canvas.DrawImage(image, sx + safeLeft, sy + safeTop, srcCenterW, srcCenterH, drawLeft, drawTop, dstCenterW, dstCenterH);
-        if (CanDraw(drawRight, srcCenterH) && CanDraw(drawRight, dstCenterH))
-            canvas.DrawImage(image, sx + sw - drawRight, sy + safeTop, drawRight, srcCenterH, rightX, drawTop, drawRight, dstCenterH);
+        // 像素对齐之后接缝处仍可能因画布再缩放留下一线浅缝。不透明的图再让相邻块互相垫底 SliceOverlap
+        // 个设计像素（先画的块伸到后画的块下面），浅缝就没了；但半透明的图叠两层会变深成黑线，
+        // 所以只有「原图接缝处不透明且控件不透明」才叠，否则只靠像素对齐。
+        bool opaqueControl = !_controlAlphaStates.TryGetValue(canvas, out var controlAlpha) || controlAlpha >= 0.999f;
+        float o = opaqueControl && SeamsOpaque(state.ResolvedPath, spriteRect, safeLeft, safeRight, safeTop, safeBottom)
+            ? SliceOverlap
+            : 0f;
+        bool hasL = dstLeft > 0f, hasR = dstRight > 0f, hasT = dstTop > 0f, hasB = dstBottom > 0f;
 
-        if (CanDraw(drawLeft, drawBottom))
-            canvas.DrawImage(image, sx, sy + sh - drawBottom, drawLeft, drawBottom, 0, bottomY, drawLeft, drawBottom);
-        if (CanDraw(srcCenterW, drawBottom) && CanDraw(dstCenterW, drawBottom))
-            canvas.DrawImage(image, sx + safeLeft, sy + sh - drawBottom, srcCenterW, drawBottom, drawLeft, bottomY, dstCenterW, drawBottom);
-        if (CanDraw(drawRight, drawBottom))
-            canvas.DrawImage(image, sx + sw - drawRight, sy + sh - drawBottom, drawRight, drawBottom, rightX, bottomY, drawRight, drawBottom);
+        void Piece(float srcX, float srcY, float srcW, float srcH, float dstX, float dstY, float dstW, float dstH,
+            float expandL, float expandT, float expandR, float expandB)
+        {
+            if (!CanDraw(srcW, srcH) || !CanDraw(dstW, dstH))
+                return;
+            float kx = srcW / dstW;
+            float ky = srcH / dstH;
+            float srcL = MathF.Max(sx, srcX - expandL * kx);
+            float srcT = MathF.Max(sy, srcY - expandT * ky);
+            float srcR = MathF.Min(sx + sw, srcX + srcW + expandR * kx);
+            float srcB = MathF.Min(sy + sh, srcY + srcH + expandB * ky);
+            canvas.DrawImage(image, srcL, srcT, srcR - srcL, srcB - srcT,
+                dstX - expandL, dstY - expandT, dstW + expandL + expandR, dstH + expandT + expandB);
+        }
+
+        var srcRightX = sx + sw - drawRight;
+        var srcBottomY = sy + sh - drawBottom;
+
+        // 从里往外：中间 → 四边 → 四角，先画的往后画的邻块下面伸（o 为 0 时就是严格拼接）。
+        Piece(sx + safeLeft, sy + safeTop, srcCenterW, srcCenterH, x1, y1, dstCenterWidth, dstCenterHeight,
+            hasL ? o : 0f, hasT ? o : 0f, hasR ? o : 0f, hasB ? o : 0f);
+
+        Piece(sx + safeLeft, sy, srcCenterW, drawTop, x1, 0, dstCenterWidth, dstTop, hasL ? o : 0f, 0f, hasR ? o : 0f, 0f);
+        Piece(sx + safeLeft, srcBottomY, srcCenterW, drawBottom, x1, y2, dstCenterWidth, dstBottom, hasL ? o : 0f, 0f, hasR ? o : 0f, 0f);
+        Piece(sx, sy + safeTop, drawLeft, srcCenterH, 0, y1, dstLeft, dstCenterHeight, 0f, hasT ? o : 0f, 0f, hasB ? o : 0f);
+        Piece(srcRightX, sy + safeTop, drawRight, srcCenterH, x2, y1, dstRight, dstCenterHeight, 0f, hasT ? o : 0f, 0f, hasB ? o : 0f);
+
+        Piece(sx, sy, drawLeft, drawTop, 0, 0, dstLeft, dstTop, 0f, 0f, 0f, 0f);
+        Piece(srcRightX, sy, drawRight, drawTop, x2, 0, dstRight, dstTop, 0f, 0f, 0f, 0f);
+        Piece(sx, srcBottomY, drawLeft, drawBottom, 0, y2, dstLeft, dstBottom, 0f, 0f, 0f, 0f);
+        Piece(srcRightX, srcBottomY, drawRight, drawBottom, x2, y2, dstRight, dstBottom, 0f, 0f, 0f, 0f);
+    }
+
+    /// <summary>九宫格相邻块互相垫底的宽度（设计像素），只用于接缝处不透明的图，见 DrawAtlasSliced。</summary>
+    private const float SliceOverlap = 3f;
+
+    /// <summary>每张九宫格图（图集路径 + 区域）接缝处是否不透明，读一次原图后缓存。</summary>
+    private readonly Dictionary<string, bool> _seamOpaqueCache = new();
+
+    /// <summary>
+    /// 原图 4 条切分线附近是否不透明：沿每条切分线在中间区段取 5 个点，透明度都 ≥ 250 才算。
+    /// 需要把图片读成 CPU 像素，结果按图缓存，图片读完即释放。读不到时按「不透明」处理（保持原先的防缝效果）。
+    /// </summary>
+    private bool SeamsOpaque(string imagePath, RectangleF spriteRect, float left, float right, float top, float bottom)
+    {
+        string key = imagePath + "|" + spriteRect.X + "," + spriteRect.Y + "," + spriteRect.Width + "," + spriteRect.Height;
+        if (_seamOpaqueCache.TryGetValue(key, out bool cached))
+        {
+            return cached;
+        }
+
+        bool opaque = true;
+        GameGraph.ResourceSystem.Image? pixels = null;
+        try
+        {
+            pixels = GameGraph.ResourceSystem.Image.Load(imagePath);
+            if (pixels != null && pixels.HasAlphaChannel)
+            {
+                float x0 = spriteRect.X, y0 = spriteRect.Y, w = spriteRect.Width, h = spriteRect.Height;
+                float[] seamXs = { x0 + left, x0 + w - right - 1f };
+                float[] seamYs = { y0 + top, y0 + h - bottom - 1f };
+                for (int i = 1; i <= 5 && opaque; i++)
+                {
+                    float ty = y0 + top + (h - top - bottom) * i / 6f;
+                    float tx = x0 + left + (w - left - right) * i / 6f;
+                    foreach (float seamX in seamXs)
+                        opaque &= Alpha(pixels, seamX, ty) >= 250;
+                    foreach (float seamY in seamYs)
+                        opaque &= Alpha(pixels, tx, seamY) >= 250;
+                }
+            }
+        }
+        catch
+        {
+            opaque = true;
+        }
+        finally
+        {
+            pixels?.Dispose();
+        }
+
+        _seamOpaqueCache[key] = opaque;
+        return opaque;
+    }
+
+    private static int Alpha(GameGraph.ResourceSystem.Image pixels, float x, float y)
+    {
+        int px = Math.Clamp((int)x, 0, pixels.Width - 1);
+        int py = Math.Clamp((int)y, 0, pixels.Height - 1);
+        return pixels.GetPixel(px, py).A;
+    }
+
+    /// <summary>
+    /// 画布绘制坐标 → 屏幕设备像素的映射：1 个绘制单位多少设备像素（Scale），控件左上角在屏幕上的设备像素位置（Origin，带小数）。
+    /// 设备像素比 = 设备像素尺寸 ÷ 设备无关尺寸；取不到时按 1 倍、原点 0。
+    /// </summary>
+    private static (float ScaleX, float ScaleY, float OriginX, float OriginY) DevicePixelMapping(Canvas canvas, float drawWidth, float drawHeight)
+    {
+        try
+        {
+            var dip = canvas.ActualSize;
+            var px = canvas.ActualSizePx;
+            var pos = canvas.ScreenPosition;
+            float dprX = dip.Width > 0f && px.Width > 0 ? px.Width / dip.Width : 1f;
+            float dprY = dip.Height > 0f && px.Height > 0 ? px.Height / dip.Height : 1f;
+            float scaleX = dip.Width > 0f && drawWidth > 0f ? dip.Width * dprX / drawWidth : 1f;
+            float scaleY = dip.Height > 0f && drawHeight > 0f ? dip.Height * dprY / drawHeight : 1f;
+            if (!IsPositiveFinite(scaleX)) scaleX = 1f;
+            if (!IsPositiveFinite(scaleY)) scaleY = 1f;
+            float originX = pos.X * dprX;
+            float originY = pos.Y * dprY;
+            return (scaleX, scaleY, float.IsFinite(originX) ? originX : 0f, float.IsFinite(originY) ? originY : 0f);
+        }
+        catch
+        {
+            return (1f, 1f, 0f, 0f);
+        }
     }
 
     private SizeF ResolveRenderSize(Control control, float fallbackWidth, float fallbackHeight)

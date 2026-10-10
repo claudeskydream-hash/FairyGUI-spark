@@ -345,6 +345,11 @@ public class SCERenderContext
             else
             {
                 _adapter.SetImageRegion(native, atlasImgPath, atlasRegion, atlasRotated);
+
+                // 发布时裁掉了透明边（trimImage）的图：图集里只存实际内容，要按偏移放回原始尺寸里的位置，
+                // 否则会被拉伸铺满整个控件（图标变大、变形）—— 这是以前只能用单图的原因。
+                var sprite = packageItem.Sprite;
+                ((SCEAdapter)_adapter).SetImageRegionTrim(native, sprite.Offset, sprite.OriginalSize);
             }
             image.ApplyNativeVisualState();
             return;
