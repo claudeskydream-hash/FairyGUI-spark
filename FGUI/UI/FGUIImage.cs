@@ -53,6 +53,10 @@ public class GImage : GObject, IColorGear
     public override void Setup_BeforeAdd(ByteBuffer buffer, int beginPos)
     {
         base.Setup_BeforeAdd(buffer, beginPos);
+
+        // 自定义数据（Data）刚由基类读进来；原生控件若已提前建好，按它补判一次拦不拦点击（BlockTouchMarker）。
+        Render.SCERenderContext.Instance.RefreshPointerBlocking(this);
+
         buffer.Seek(beginPos, 5);
         if (buffer.ReadBool()) _color = buffer.ReadColor();
         _flip = (FlipType)buffer.ReadByte();
@@ -462,6 +466,9 @@ public class GGraph : GObject, IColorGear
     public int LineSize { get => _lineSize; set { _lineSize = value; UpdateGraphDisplay(); } }
     public Color Color { get => _fillColor; set => FillColor = value; }
 
+    /// <summary>四角半径（设计像素）：左上、右上、左下、右下，顺序同 FairyGUI 包数据。</summary>
+    public IReadOnlyList<float> CornerRadius => _cornerRadius;
+
     public override void Setup_BeforeAdd(ByteBuffer buffer, int beginPos)
     {
         base.Setup_BeforeAdd(buffer, beginPos);
@@ -511,6 +518,7 @@ public class GGraph : GObject, IColorGear
         _type = GraphType.Rect;
         SetSize(width, height);
         _lineSize = lineSize;
+        Array.Clear(_cornerRadius);
         _lineColor = lineColor;
         _fillColor = fillColor;
         UpdateGraphDisplay();
@@ -536,26 +544,7 @@ public class GGraph : GObject, IColorGear
         if (NativeObject == null)
             Render.SCERenderContext.Instance.CreateNativeControl(this);
         if (NativeObject != null)
-        {
-            var adapter = Render.SCERenderContext.Instance.Adapter;
-            if (adapter == null)
-            {
-                return;
-            }
-
-            if (_type == GraphType.Ellipse)
-            {
-                adapter.SetCanvasEllipse(NativeObject, _fillColor);
-                return;
-            }
-
-            adapter.ClearCanvasRenderState(NativeObject);
-            adapter.SetBackgroundColor(NativeObject, _fillColor);
-            if (_type == GraphType.Rect && _cornerRadius[0] > 0)
-                adapter.SetCornerRadius(NativeObject, _cornerRadius[0]);
-            else
-                adapter.SetCornerRadius(NativeObject, 0);
-        }
+            Render.SCERenderContext.Instance.ApplyGraphProperties(this, NativeObject);
     }
 }
 #endif

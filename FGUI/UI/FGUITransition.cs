@@ -470,7 +470,13 @@ public class Transition
                 }
                 else if (buffer.Seek(curPos, 2))
                 {
+                    // 不带补间的关键帧只有一个值。ApplyValue 按 ratio=1 取的是 EndValue，
+                    // 所以起止两份都要填 —— 只填 StartValue 的话 Pivot 会被设成 (0,0)、Visible 恒为 false。
                     DecodeTransitionValue(item.Type, buffer, item.StartValue);
+                    if (buffer.Seek(curPos, 2))
+                    {
+                        DecodeTransitionValue(item.Type, buffer, item.EndValue);
+                    }
                 }
 
                 EmitDecodeDiag(item, buffer.Version);
@@ -502,9 +508,15 @@ public class Transition
     {
         switch (type)
         {
+            // Scale 只有两个 float，没有 XY/Size 那两个"是否改变"的 bool（同官方 FairyGUI）。
+            // 和下面那组共用一段的话，0.8,0.8 → 1,1 会被读错位成接近 0 的数，面板缩成一个点。
+            case TransitionActionType.Scale:
+                value.X = buffer.ReadFloat();
+                value.Y = buffer.ReadFloat();
+                break;
+
             case TransitionActionType.XY:
             case TransitionActionType.Size:
-            case TransitionActionType.Scale:
             case TransitionActionType.Pivot:
             case TransitionActionType.Skew:
                 value.B1 = buffer.ReadBool();

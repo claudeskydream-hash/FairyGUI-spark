@@ -131,11 +131,28 @@ public class SCERenderContext
             return canvas;
         }
 
-        // Non-ellipse graph keeps control path.
-        var panel = _adapter.CreatePanel();
-        if (panel != null && graph.Type != GraphType.Empty)
-            _adapter.SetBackgroundColor(panel, graph.FillColor);
-        return panel;
+        // 带描边、或四角半径不一样的矩形，原生控件画不出来，改用 Canvas 自绘。
+        // 其余（纯色、统一圆角——弹窗遮罩基本都是这种）仍用 Panel 的背景色 + 圆角，不白占一张画布。
+        // 样式由 ApplyGraphProperties 统一设置。
+        if (graph.Type == GraphType.Rect && NeedsCanvasRect(graph))
+        {
+            return _adapter.CreateCanvas();
+        }
+
+        return _adapter.CreatePanel();
+    }
+
+    private static bool NeedsCanvasRect(GGraph graph)
+    {
+        // FGUI 矩形默认就带 1 像素黑色描边（xml 里省略即默认值），黑色遮罩的描边与填充同色、画了也看不出，
+        // 不为它换 Canvas。
+        if (graph.LineSize > 0 && graph.LineColor.A > 0 && graph.LineColor.ToArgb() != graph.FillColor.ToArgb())
+        {
+            return true;
+        }
+
+        var corner = graph.CornerRadius;
+        return corner[1] != corner[0] || corner[2] != corner[0] || corner[3] != corner[0];
     }
     
     private object? CreateImageControl(GImage image)
@@ -256,9 +273,12 @@ public class SCERenderContext
         }
 
         // 输入框也必须拦截指针:否则点击穿透到父级,原生 Input 收不到按下事件、无法聚焦输入。
+        // 有形状的图形也挡（见 IsHitGraph）；自定义数据里标了拦截的图片也挡（见 IsBlockTouchImage）。
         var block = obj is GButton
             || obj is GTextInput
-            || (obj is GComponent component && component.ScrollPane != null);
+            || (obj is GComponent component && component.ScrollPane != null)
+            || IsHitGraph(obj)
+            || IsBlockTouchImage(obj);
         _adapter.SetBlockPointerEvents(native, block);
     }
 
@@ -270,6 +290,21 @@ public class SCERenderContext
         }
 
         BindTouchEvents(obj, obj.NativeObject);
+    }
+
+    /// <summary>
+    /// 自定义数据读进来之后，按它重新判一次"挂不挂指针回调、拦不拦点击"。
+    /// 图片的原生控件可能在读自定义数据之前就建好了（构建资源时），那时判定看不到 <see cref="BlockTouchMarker"/>。
+    /// </summary>
+    internal void RefreshPointerBlocking(GObject obj)
+    {
+        if (_adapter == null || obj.NativeObject == null)
+        {
+            return;
+        }
+
+        BindTouchEvents(obj, obj.NativeObject);
+        ApplyPointerBlocking(obj, obj.NativeObject);
     }
 
     private void ApplyTypeSpecificProperties(GObject obj)
@@ -292,21 +327,50 @@ public class SCERenderContext
         loader.SyncNativeContent();
     }
 
-    private void ApplyGraphProperties(GGraph graph, object native)
+    /// <summary>
+    /// 把图形的形状与颜色同步到原生控件。创建时与 <see cref="GGraph"/> 改颜色 / 重画时都走这里，只有一份。
+    /// 目前支持：空白、矩形（填充、描边、圆角）、椭圆（只有填充）；多边形、正多边形尚未实现，暂按矩形填充画。
+    /// </summary>
+    internal void ApplyGraphProperties(GGraph graph, object native)
     {
         if (_adapter == null)
         {
             return;
         }
 
-        if (graph.Type == GraphType.Ellipse)
+        switch (graph.Type)
         {
-            _adapter.SetCanvasEllipse(native, graph.FillColor);
-            return;
-        }
+            case GraphType.Ellipse:
+                _adapter.SetCanvasEllipse(native, graph.FillColor);
+                return;
 
-        _adapter.ClearCanvasRenderState(native);
-        _adapter.SetBackgroundColor(native, graph.FillColor);
+            case GraphType.Empty:
+                _adapter.ClearCanvasRenderState(native);
+                _adapter.SetBackgroundColor(native, Color.Transparent);
+                _adapter.SetCornerRadius(native, 0f);
+                return;
+
+            case GraphType.Rect:
+            {
+                // 描边宽度与圆角是设计像素，和尺寸一样要乘内容缩放（见 ApplyProperties）。
+                float scaleFactor = UIRuntime.ContentScaleFactor;
+                var corner = graph.CornerRadius;
+                var scaledCorner = new float[corner.Count];
+                for (var i = 0; i < corner.Count; i++)
+                {
+                    scaledCorner[i] = corner[i] * scaleFactor;
+                }
+
+                _adapter.SetGraphRect(native, graph.FillColor, graph.LineSize * scaleFactor, graph.LineColor, scaledCorner);
+                return;
+            }
+
+            default:
+                _adapter.ClearCanvasRenderState(native);
+                _adapter.SetBackgroundColor(native, graph.FillColor);
+                _adapter.SetCornerRadius(native, 0f);
+                return;
+        }
     }
 
     private void ApplyImageProperties(GImage image, object native)
@@ -909,7 +973,55 @@ public class SCERenderContext
             return true;
         }
 
+        // 光设 BlockPointerEvents 不够：没挂指针回调的原生控件不参与命中，点击照样漏到场景（实测）。
+        if (IsHitGraph(obj) || IsBlockTouchImage(obj))
+        {
+            return true;
+        }
+
         return HasAnyTouchListener(obj);
+    }
+
+    /// <summary>
+    /// 有形状的图形（矩形 / 椭圆…）同 FairyGUI 一样可点：弹窗底下的半透明遮罩靠它挡住点击、也能挂 onClick。
+    /// 空白图形（Empty）只是占位，保持穿透；不可触摸（touchable=false）的也不挡。
+    /// </summary>
+    private static bool IsHitGraph(GObject obj)
+    {
+        return obj is GGraph graph && graph.Type != GraphType.Empty && graph.Touchable;
+    }
+
+    /// <summary>
+    /// 图片自定义数据（customData）里写了这一行，就拦截点击。
+    /// </summary>
+    public const string BlockTouchMarker = "Spark.BlockTouch=1";
+
+    /// <summary>
+    /// 标了拦截的图片（自定义数据里有 <see cref="BlockTouchMarker"/> 一行）：挡住点击，不漏到下面。
+    ///
+    /// <para>
+    /// 官方 FairyGUI 的图片一律不接受点击，编辑器里图片的「不可触摸」固定勾着、置灰改不了；
+    /// 而发布出来每张图片的可触摸位其实都是 1，运行时区分不出哪张是特意要挡的。
+    /// 所以改用自定义数据做显式开关：没标的图片照旧穿透，现有界面不受影响。
+    /// 编辑器里由 AzureSailBoardGenerator 插件的「点击」下拉写入。
+    /// </para>
+    /// </summary>
+    private static bool IsBlockTouchImage(GObject obj)
+    {
+        if (obj is not GImage || !obj.Touchable || obj.Data is not string data || data.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (var line in data.Split('\n'))
+        {
+            if (string.Equals(line.Trim(), BlockTouchMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool HasAnyTouchListener(GObject obj)

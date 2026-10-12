@@ -47,6 +47,14 @@ public interface ISCEAdapter
     bool TrySetImageFill(object control, FillMethod fillMethod, int fillOrigin, bool fillClockwise, float fillAmount);
     void SetCanvasImage(object control, string imagePath);
     void SetCanvasEllipse(object control, Color fillColor);
+
+    /// <summary>
+    /// FGUI 矩形图形（含圆角、描边）。Canvas 上自绘：填充 + 沿内侧描边、四角半径各自生效；
+    /// 普通控件上只能用背景色 + 统一圆角（取左上角），描边画不出来。
+    /// 圆角顺序同 FairyGUI：左上、右上、左下、右下；长度单位已乘过内容缩放。
+    /// </summary>
+    void SetGraphRect(object control, Color fillColor, float lineSize, Color lineColor, float[] cornerRadius);
+
     void ClearCanvasRenderState(object control);
     void SetSlicedImage(object control, string imagePath, int left, int right, int top, int bottom);
     void SetImageRegion(object control, string atlasPath, RectangleF region, bool rotated);

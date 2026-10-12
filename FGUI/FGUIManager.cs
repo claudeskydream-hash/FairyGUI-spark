@@ -405,14 +405,23 @@ public static class UIRuntime
             return;
         }
 
-        GameUI.Device.ScreenViewport.Primary.OnSizeChanged += OnScreenSizeChanged;
+        // 只订阅 OnViewportChanged（SDK screen-viewport-resolution 的要求）：它在 Size（设计坐标）、方向、像素比、
+        // 安全区全部更新完之后才触发。原先挂的 OnSizeChanged 只代表物理像素宽高变了，可能早于 Size 重算到达 ——
+        // 那时读到的还是旧 Size，全屏根尺寸不变，切分辨率后界面既不移动也不重排。
+        // 不要再并挂 OnSizeChanged：兼容事件会在统一快照前分别到达，重复入口只会放大时序差异。
+        GameUI.Device.ScreenViewport.Primary.OnViewportChanged += OnScreenViewportChanged;
         _screenSizeListenerBound = true;
     }
 
-    private static void OnScreenSizeChanged(int _, int __)
+    private static void OnScreenViewportChanged()
     {
         UpdateContentScaleFactor();
         var rootSize = GetLogicalRootSize();
+        var viewport = GameUI.Device.ScreenViewport.Primary;
+        Game.Logger.LogInformation(
+            "[FGUI] 视口变化 → 全屏根 {W}x{H}（像素 {Px}x{Py}，设计分辨率 {Dw}x{Dh}，{Mode}）",
+            rootSize.Width, rootSize.Height, viewport.WidthPx, viewport.HeightPx,
+            viewport.DesignResolution.Width, viewport.DesignResolution.Height, viewport.ScaleMode);
 
         List<FGUIRoot>? staleRoots = null;
         foreach (var root in _fullScreenRoots)

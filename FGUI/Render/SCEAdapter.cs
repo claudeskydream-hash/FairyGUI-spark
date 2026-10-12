@@ -45,6 +45,8 @@ public class SCEAdapter : ISCEAdapter
     // Base rectangles for panel-subtree fallback scaling (button downEffect=scale).
     private readonly Dictionary<object, RectangleF> _fallbackScaleBaseRects = new();
     private readonly HashSet<object> _fallbackScaleActiveRoots = new();
+    // 正在缩放的根当前的缩放值。缩放途中根被挪位置(列表重排)时，按它把根摆到新位置的中心(见 TryMoveScaledRoot)。
+    private readonly Dictionary<object, PointF> _fallbackScaleCurrent = new();
     // 缩放前的字号基准:Label 的字号不随控件 Size 变化,缩放时要按比例改、恢复时要还原。
     private readonly Dictionary<object, float> _fallbackScaleBaseFontSizes = new();
     // Track last visible/alpha set through adapter.
@@ -95,7 +97,8 @@ public class SCEAdapter : ISCEAdapter
         PlainImage,
         AtlasRegion,
         AtlasSliced,
-        FilledEllipse
+        FilledEllipse,
+        GraphRect
     }
 
     private sealed class AtlasSlicedRenderState
@@ -125,6 +128,14 @@ public class SCEAdapter : ISCEAdapter
         public bool Rotated { get; set; }
         public AtlasSlicedRenderState? AtlasSliced { get; set; }
         public Color FillColor { get; set; } = Color.Transparent;
+
+        /// <summary>矩形图形的描边宽度（已乘内容缩放）；0 = 不描边。</summary>
+        public float LineSize { get; set; }
+
+        public Color LineColor { get; set; } = Color.Transparent;
+
+        /// <summary>矩形图形的四角半径：左上、右上、左下、右下（已乘内容缩放）。</summary>
+        public float[] CornerRadius { get; } = new float[4];
     }
 
     private sealed class VirtualizingPanelRenderState
@@ -271,10 +282,43 @@ public class SCEAdapter : ISCEAdapter
             return;
         }
 
+        if (TryMoveScaledRoot(control, c, x, y))
+        {
+            return;
+        }
+
         c.Position(x, y);
         TrackControlPosition(control, x, y);
         if (c is Label lblP && _underlineOverlays.ContainsKey(lblP))
             SyncUnderlineOverlay(c);
+    }
+
+    /// <summary>
+    /// 正在缩放(子树兜底缩放)的根被挪了位置：把新位置记进它的缩放基准，再按当前缩放摆到新位置的中心。
+    ///
+    /// 不这么做的话，缩放每一帧都按"开始缩放时记下的位置"摆它，结束时还原到那里 ——
+    /// 缩放途中列表重排给它的新位置被整个吞掉。典型场景：居中排列的列表逐个加格子、每格出场都在放大，
+    /// 后加的格子会让前面的往旁边挪，结果几格全挤在一处。
+    /// </summary>
+    /// <returns>是正在缩放的根、已经处理完返回 true；否则 false，照常设位置。</returns>
+    private bool TryMoveScaledRoot(object control, Control c, float x, float y)
+    {
+        if (!_fallbackScaleActiveRoots.Contains(control)
+            || !_fallbackScaleBaseRects.TryGetValue(control, out var baseRect))
+        {
+            return false;
+        }
+
+        baseRect.X = x;
+        baseRect.Y = y;
+        _fallbackScaleBaseRects[control] = baseRect;
+        TrackControlPosition(control, x, y);
+
+        var scale = _fallbackScaleCurrent.TryGetValue(control, out var current) ? current : new PointF(1f, 1f);
+        var scaledWidth = MathF.Max(1f, baseRect.Width * scale.X);
+        var scaledHeight = MathF.Max(1f, baseRect.Height * scale.Y);
+        c.Position(x + (baseRect.Width - scaledWidth) * 0.5f, y + (baseRect.Height - scaledHeight) * 0.5f);
+        return true;
     }
 
     public void SetScrollOverscroll(object control, float dx, float dy)
@@ -480,6 +524,7 @@ public class SCEAdapter : ISCEAdapter
         if (isIdentity)
         {
             _fallbackScaleActiveRoots.Remove(rootControl);
+            _fallbackScaleCurrent.Remove(rootControl);
             RestoreSubtreeBaseRects(nodes);
 
             return true;
@@ -546,6 +591,7 @@ public class SCEAdapter : ISCEAdapter
         }
 
         _fallbackScaleActiveRoots.Add(rootControl);
+        _fallbackScaleCurrent[rootControl] = new PointF(safeScaleX, safeScaleY);
         return true;
     }
 
@@ -905,6 +951,50 @@ public class SCEAdapter : ISCEAdapter
         state.FillColor = fillColor;
     }
 
+    public void SetGraphRect(object control, Color fillColor, float lineSize, Color lineColor, float[] cornerRadius)
+    {
+        if (control is Canvas canvas)
+        {
+            var state = EnsureCanvasImageState(canvas);
+            state.ResolvedPath = string.Empty;
+            state.CurrentImage = null;
+            state.RenderMode = CanvasRenderMode.GraphRect;
+            state.SourceRegion = RectangleF.Empty;
+            state.Rotated = false;
+            state.AtlasSliced = null;
+            state.FillColor = fillColor;
+            state.LineSize = lineSize;
+            state.LineColor = lineColor;
+            for (var i = 0; i < state.CornerRadius.Length; i++)
+            {
+                state.CornerRadius[i] = i < cornerRadius.Length ? cornerRadius[i] : 0f;
+            }
+
+            canvas.Background(Color.Transparent);
+            canvas.CornerRadius(0f);
+            return;
+        }
+
+        if (control is not Control c)
+        {
+            return;
+        }
+
+        // 普通控件只有背景色和统一圆角。创建时已按"要不要描边 / 四角是否一致"选了 Canvas，
+        // 走到这里还要描边，说明是创建之后才用代码改出来的 —— 原生控件换不了类型，只能提示一次。
+        // 描边与填充同色（FGUI 默认 1 像素黑边 + 黑色遮罩）看不出区别，不算画不出来。
+        if (lineSize > 0f && lineColor.A > 0 && lineColor.ToArgb() != fillColor.ToArgb() && !_graphStrokeOnPanelWarned)
+        {
+            _graphStrokeOnPanelWarned = true;
+            Game.Logger.LogWarning("[FGUI] 图形创建时没有描边，之后再加的描边画不出来（原生控件已是 Panel）");
+        }
+
+        c.Background(fillColor);
+        c.CornerRadius(cornerRadius.Length > 0 ? cornerRadius[0] : 0f);
+    }
+
+    private bool _graphStrokeOnPanelWarned;
+
     public void ClearCanvasRenderState(object control)
     {
         if (control is not Canvas canvas || !_canvasImageStates.TryGetValue(canvas, out var state))
@@ -1084,18 +1174,10 @@ public class SCEAdapter : ISCEAdapter
         }
         else if (control is Control c && !string.IsNullOrEmpty(atlasPath))
         {
-            if (!TryEnsureImageTargetSize(c, atlasPath, "SetSlicedImageFromAtlas-Control"))
-            {
-                return;
-            }
-
-            // Fallback for non-Canvas controls - just set image with SlicedEdges
-            c.Image = atlasPath;
-            c.SlicedEdges = new Thickness(left, top, right, bottom);
-            if (EnableImagePipelineInfoLogs)
-            {
-                System.GC.KeepAlive(0);
-            }
+            // 非 Canvas 控件 = 独立图集（atlas="alone_npot"）的九宫格，见 SCERenderContext.CanUseNativeSlicedImage：
+            // 整张图就是这一个 sprite，交给星火原生 SlicedEdges 一次画完，没有 9 块拼接的接缝。
+            // 走 SetSlicedImage 而不是直接赋值：要经过路径解析，控件比边距还小时也要退回整图拉伸。
+            SetSlicedImage(c, atlasPath, left, right, top, bottom);
         }
     }
 
@@ -1632,6 +1714,9 @@ public class SCEAdapter : ISCEAdapter
             case CanvasRenderMode.FilledEllipse:
                 DrawFilledEllipse(canvas, state);
                 break;
+            case CanvasRenderMode.GraphRect:
+                DrawGraphRect(canvas, state);
+                break;
             case CanvasRenderMode.AtlasRegion:
                 if (!state.CurrentImage.HasValue)
                 {
@@ -1678,6 +1763,46 @@ public class SCEAdapter : ISCEAdapter
 
         canvas.FillPaint = state.FillColor;
         canvas.FillEllipse(radiusX, radiusY, radiusX, radiusY);
+    }
+
+    /// <summary>
+    /// 画 FGUI 矩形图形：先填充，再描边。描边同 FairyGUI 画在矩形<b>内侧</b>（线宽不外扩），
+    /// 所以描边路径往里缩半个线宽、圆角也跟着减半个线宽，线的外沿正好贴着控件边。
+    /// </summary>
+    private void DrawGraphRect(Canvas canvas, CanvasImageRenderState state)
+    {
+        var renderSize = ResolveRenderSize(canvas, MinNativeSize, MinNativeSize);
+        var width = renderSize.Width;
+        var height = renderSize.Height;
+        if (!IsPositiveFinite(width) || !IsPositiveFinite(height))
+        {
+            return;
+        }
+
+        // 半径超过短边一半时各角会互相顶住，路径会画乱；按短边一半封顶。
+        var maxRadius = MathF.Min(width, height) * 0.5f;
+        float Radius(int i) => MathF.Max(0f, MathF.Min(state.CornerRadius[i], maxRadius));
+
+        if (state.FillColor.A > 0)
+        {
+            canvas.FillPaint = state.FillColor;
+            var fill = new GameUI.Graphics.PathF();
+            fill.AppendRoundedRectangle(0f, 0f, width, height, Radius(0), Radius(1), Radius(2), Radius(3));
+            canvas.FillPath(fill);
+        }
+
+        var line = MathF.Min(state.LineSize, maxRadius * 2f);
+        if (line > 0f && state.LineColor.A > 0)
+        {
+            var half = line * 0.5f;
+            canvas.StrokePaint = state.LineColor;
+            canvas.StrokeWidth = line;
+            var stroke = new GameUI.Graphics.PathF();
+            stroke.AppendRoundedRectangle(half, half, width - line, height - line,
+                MathF.Max(0f, Radius(0) - half), MathF.Max(0f, Radius(1) - half),
+                MathF.Max(0f, Radius(2) - half), MathF.Max(0f, Radius(3) - half));
+            canvas.DrawPath(stroke);
+        }
     }
 
     private bool TryGetCanvasImage(string resolvedImagePath, out Image image)
@@ -1831,6 +1956,9 @@ public class SCEAdapter : ISCEAdapter
         var srcCenterH = sh - safeTop - safeBottom;
 
         static bool CanDraw(float w, float h) => IsPositiveFinite(w) && IsPositiveFinite(h) && w >= MinCanvasDrawSize && h >= MinCanvasDrawSize;
+        // 源区域只要求至少 1 像素：九宫格中间常常只切 1 像素宽 / 高（如 scale9grid="60,53,75,1"）拿来拉伸，
+        // 按目标的 2 像素门槛判会把整行 / 整列（左、中、右三块）一起跳过，画面中间缺一截。
+        static bool CanSample(float w, float h) => IsPositiveFinite(w) && IsPositiveFinite(h) && w >= MinNativeSize && h >= MinNativeSize;
 
         // 接缝处理：画布最终按屏幕缩放（如 1080 设计宽画在 477 设备像素上），切分线落在小数设备像素上时，
         // 相邻两块在接缝像素各盖一部分：不透明图会透出底色成浅线，半透明图如果改成互相多叠又会叠深成黑线。
@@ -1860,7 +1988,7 @@ public class SCEAdapter : ISCEAdapter
         void Piece(float srcX, float srcY, float srcW, float srcH, float dstX, float dstY, float dstW, float dstH,
             float expandL, float expandT, float expandR, float expandB)
         {
-            if (!CanDraw(srcW, srcH) || !CanDraw(dstW, dstH))
+            if (!CanSample(srcW, srcH) || !CanDraw(dstW, dstH))
                 return;
             float kx = srcW / dstW;
             float ky = srcH / dstH;
@@ -3518,6 +3646,7 @@ public class SCEAdapter : ISCEAdapter
         }
         _fallbackScaleBaseRects.Remove(control);
         _fallbackScaleActiveRoots.Remove(control);
+        _fallbackScaleCurrent.Remove(control);
         if (control is Canvas canvas)
         {
             _canvasImageStates.Remove(canvas);
@@ -3579,6 +3708,7 @@ public class SCEAdapter : ISCEAdapter
         }
         _fallbackScaleBaseRects.Remove(control);
         _fallbackScaleActiveRoots.Remove(control);
+        _fallbackScaleCurrent.Remove(control);
         if (!clearChildren || _attachedParentByChild.Count == 0)
         {
             return;
@@ -3609,6 +3739,7 @@ public class SCEAdapter : ISCEAdapter
             _controlPositions.Remove(child);
             _fallbackScaleBaseRects.Remove(child);
             _fallbackScaleActiveRoots.Remove(child);
+            _fallbackScaleCurrent.Remove(child);
         }
     }
 

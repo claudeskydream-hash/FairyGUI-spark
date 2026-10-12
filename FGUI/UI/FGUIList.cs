@@ -400,6 +400,14 @@ public class GList : GComponent
         obj.Alpha = 1f;
         obj.Rotation = 0f;
         obj.SetScale(1f, 1f);
+
+        // 原生位置、尺寸强制按 FGUI 当前值再下发一次。
+        // FGUI 设位置是"值没变就不下发"：池里取出的项若被排到和上次同一个位置，就不会再同步原生；
+        // 而它在池外期间原生状态可能已经和 FGUI 对不上（缩放动画的基准与还原等），错的原生位置会一直留着 ——
+        // 实测「恭喜获得」第二次出满 9 格，最后一格的原生位置不对，原生滚动范围算不到它，滚不过去。
+        var context = Render.SCERenderContext.Instance;
+        context.UpdateSize(obj);
+        context.UpdatePosition(obj);
     }
 
     private bool TryResolvePoolItem(string url, out PackageItem? item, out string poolKey)
