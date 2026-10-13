@@ -1255,7 +1255,11 @@ public class SCERenderContext
             }
 
             // Manual drag bridge: ensures list drag works even when child controls consume pointer events.
-            var useManualPointerBridge = isManualVirtualFallback || needsNativeScroll;
+            // 内容没超出视口（needsNativeScroll=false）时原生滚动不开，但开着拖动效果 + 回弹的列表照样挂桥：
+            // 拖动走 FGUI 的橡皮筋（ScrollPane.OnTouchMove 的 bounceback 分支），过界量由 SetScrollOverscroll
+            // 平移面板本体画出来（与原生滚动开没开无关），松手回弹归位 —— 内容少时也能拖出弹性，不再"拖不动"。
+            // 桥按 native 只挂一次；内容后来超出了也照用同一套，不冲突。
+            var useManualPointerBridge = isManualVirtualFallback || needsNativeScroll || CanBounceWithoutOverflow(scrollPane);
             if (useManualPointerBridge && _boundScrollablePointerNative.Add(native))
             {
                 _adapter.OnPointerPressWithPosition(native, (x, y) =>
@@ -1290,7 +1294,18 @@ public class SCERenderContext
                         }
 
                         var dragHorizontal = MathF.Abs(dxTotal) > MathF.Abs(dyTotal);
-                        if (dragHorizontal == horizontal)
+                        // 同轴、但自己内容没超出、外层同轴列表能滚：让给外层滚，不在内层原地弹。
+                        // （内容少的内层列表挂了回弹桥之后，不这么分流就会把外层列表的滚动截下来。）
+                        var sameAxisAncestor = dragHorizontal == horizontal && !HasOverflow(pane, horizontal)
+                            ? FindAncestorScrollable(component, dragHorizontal)
+                            : null;
+                        if (sameAxisAncestor.HasValue && HasOverflow(sameAxisAncestor.Value.Pane, sameAxisAncestor.Value.Horizontal))
+                        {
+                            drag.ActivePane = sameAxisAncestor.Value.Pane;
+                            drag.ActiveNative = sameAxisAncestor.Value.Native;
+                            drag.ActiveHorizontal = sameAxisAncestor.Value.Horizontal;
+                        }
+                        else if (dragHorizontal == horizontal)
                         {
                             // 拖拽方向与本列表滚动轴一致：本列表处理
                             drag.ActivePane = pane;
@@ -2027,6 +2042,21 @@ public class SCERenderContext
         }
 
         return pane.PercentX > pane.PercentY;
+    }
+
+    /// <summary>
+    /// 内容没超出视口时要不要也能拖：开着拖动效果（touchEffect）和回弹（bounceback）就要 ——
+    /// 拖出橡皮筋、松手弹回，手感上告诉玩家"这是个列表，只是到头了"。两者任一关掉就不拖（与 FGUI 编辑器里的设置一致）。
+    /// </summary>
+    private static bool CanBounceWithoutOverflow(ScrollPane pane) => pane.TouchEffect && pane.BouncebackEffect;
+
+    /// <summary>这个滚动面板沿给定轴的内容是否超出视口（能真正滚动）。</summary>
+    private static bool HasOverflow(ScrollPane pane, bool horizontalAxis)
+    {
+        const float epsilon = 0.01f;
+        return horizontalAxis
+            ? pane.ContentWidth - pane.ViewWidth > epsilon
+            : pane.ContentHeight - pane.ViewHeight > epsilon;
     }
 
     private static bool ResolveNativeScrollEnabled(ScrollPane pane, bool horizontalAxis)
