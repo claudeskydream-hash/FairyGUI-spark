@@ -138,6 +138,25 @@ public class SCEAdapter : ISCEAdapter
         public float[] CornerRadius { get; } = new float[4];
     }
 
+    /// <summary>虚拟列表槽位的控件模板（spark 自己注册的一份空 Panel 数据）。</summary>
+    private static readonly GameData.GameLink<GameUI.Control.Data.GameDataControl, GameUI.Control.Data.GameDataControlPanel> VirtualSlotTemplate = new("FGUIVirtualListSlot");
+    private static bool _virtualSlotTemplateCreated;
+
+    /// <summary>
+    /// 取槽位模板，第一次用时注册它的数据。不能用 <c>Panel.DefaultTemplate</c>：那个链接在项目里没有对应的数据，
+    /// 实测面板报 "Cannot generate item, template is null"、一个槽位都不建。官方控件的模板同样是自己 new 一份数据注册的
+    /// （GameSystemUI 的 <c>new GameDataControlSlotListUI(Control.DefaultSlotListUI)</c>）。
+    /// </summary>
+    private static GameData.IGameLink<GameUI.Control.Data.GameDataControl> EnsureVirtualSlotTemplate()
+    {
+        if (!_virtualSlotTemplateCreated)
+        {
+            _virtualSlotTemplateCreated = true;
+            _ = new GameUI.Control.Data.GameDataControlPanel(VirtualSlotTemplate);
+        }
+        return VirtualSlotTemplate;
+    }
+
     private sealed class VirtualizingPanelRenderState
     {
         public bool Hooked { get; set; }
@@ -246,7 +265,24 @@ public class SCEAdapter : ISCEAdapter
         input.Background(Color.Transparent);
         return input;
     }
-    public object CreateVirtualizingPanel() => new VirtualizingPanel();
+    public object CreateVirtualizingPanel()
+    {
+        // 用 spark 自己注册的面板数据建：无参构造走的默认模板在项目里没有数据（同槽位模板的问题），
+        // 实测面板只在手动取项时才生成槽位，布局阶段从不自己虚拟化。
+        if (!_virtualPanelTemplateCreated)
+        {
+            _virtualPanelTemplateCreated = true;
+            _ = new GameUI.Control.Data.GameDataControlVirtualizingPanel(VirtualPanelTemplate)
+            {
+                ArrangeOnScroll = true,
+            };
+        }
+        return new VirtualizingPanel(VirtualPanelTemplate);
+    }
+
+    /// <summary>虚拟列表面板自身的数据（spark 自己注册）。</summary>
+    private static readonly GameData.GameLink<GameUI.Control.Data.GameDataControl, GameUI.Control.Data.GameDataControlVirtualizingPanel> VirtualPanelTemplate = new("FGUIVirtualListPanel");
+    private static bool _virtualPanelTemplateCreated;
     public object CreateCanvas()
     {
         var canvas = new Canvas();
@@ -3563,8 +3599,19 @@ public class SCEAdapter : ISCEAdapter
     {
         if (panel is VirtualizingPanel vp)
         {
+            var orientation = config.IsHorizontal ? GameUI.Enum.Orientation.Horizontal : GameUI.Enum.Orientation.Vertical;
             vp.ItemSize = new SizeF(config.ItemWidth, config.ItemHeight);
-            vp.ScrollOrientation = config.IsHorizontal ? GameUI.Enum.Orientation.Horizontal : GameUI.Enum.Orientation.Vertical;
+            vp.ScrollOrientation = orientation;
+            // 以下照 SCE 官方背包 SlotMartixUI 的配法：不配排列方向，槽位不会沿主轴依次排开；
+            // 不开滚动拖不动；ArrangeOnScroll 让滚动时立即补出新进视口的项。
+            vp.FlowOrientation = orientation;
+            // 槽位模板：不设的话面板不生成任何子项（实测 OnChildVirtualizationPhase 一次都不触发、面板是空的）。
+            // 槽位只当 FGUI 项的容器，用最朴素的 Panel；尺寸在虚拟化回调里按格子尺寸定死。
+            vp.ItemTemplate = EnsureVirtualSlotTemplate();
+            vp.ScrollEnabled = true;
+            vp.ArrangeOnScroll = true;
+            vp.HorizontalContentAlignment = HorizontalContentAlignment.Left;
+            vp.VerticalContentAlignment = VerticalContentAlignment.Top;
             // CachePages handled via CacheLength
             if (config.CachePages > 0)
             {
@@ -3600,16 +3647,27 @@ public class SCEAdapter : ISCEAdapter
                     var index = control.ItemIndex;
                     if (index >= 0 && index < current.ItemCount)
                     {
+                        // 槽位控件用的是面板默认模板，尺寸与对齐都不可靠：按格子尺寸定死、贴左上，
+                        // 否则槽位比格子窄时超出部分被裁掉（实测一行只画出前两格）。
+                        if (vp.ItemSize is SizeF slotSize)
+                        {
+                            control.HorizontalAlignment = HorizontalAlignment.Left;
+                            control.VerticalAlignment = VerticalAlignment.Top;
+                            control.Width = slotSize.Width;
+                            control.Height = slotSize.Height;
+                        }
+
                         current.ItemRenderer(index, control);
                     }
                 };
             }
 
-            // Create items list to trigger virtualization
-            var items = new List<int>();
+            // 数据源必须是物化的 List（同官方 PickList / SlotMartixUI 的 ToList()）：虚拟面板按下标取项、按条数撑滚动范围，
+            // 原先给的是惰性的 Cast<object>()，面板一个槽位都不生成。
+            var items = new List<object>(itemCount);
             for (int i = 0; i < itemCount; i++)
                 items.Add(i);
-            vp.ItemsSource = items.Cast<object>();
+            vp.ItemsSource = items;
         }
     }
     
@@ -3618,6 +3676,8 @@ public class SCEAdapter : ISCEAdapter
         if (panel is VirtualizingPanel vp)
         {
             vp.GenerateChildren();
+            // 数据源换了要重新测量，面板才会按新条数撑开滚动范围、补出视口里的项（同 SlotMartixUI）。
+            vp.InvalidateMeasure();
         }
     }
 

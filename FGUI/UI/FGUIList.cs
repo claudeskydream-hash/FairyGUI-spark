@@ -30,6 +30,9 @@ public class GList : GComponent
     private bool _virtualScrollListenerBound;
     private bool _isDisposing;
     private readonly Dictionary<int, GObject> _virtualItems = new();
+    // 原生虚拟路径下的项不在 _children 里，GetChildIndex 取不到下标：反查表，点击时靠它换回项目下标。
+    // 一个下标对应的 GObject 建出来后不再换（见 RebuildVirtualList），所以反查表与 _virtualItems 一一对应。
+    private readonly Dictionary<GObject, int> _virtualItemIndices = new();
     private readonly Dictionary<object, object> _nativeVirtualSlotChildren = new();
     private readonly HashSet<GObject> _boundItemClickHandlers = new();
     private readonly Dictionary<string, Stack<GObject>> _itemPool = new(StringComparer.Ordinal);
@@ -100,7 +103,9 @@ public class GList : GComponent
         get => _virtual ? _numItems : _children.Count;
         set
         {
-            if (_virtual) { if (_numItems != value) { _numItems = value; RefreshVirtualList(); } }
+            // FairyGUI 语义：虚拟列表赋 numItems 总会刷新内容 —— 数量没变时也要重刷已建出来的项，
+            // 否则"数据变了、条数没变"（背包里某件物品数量变了）界面不动。
+            if (_virtual) { if (_numItems != value) { _numItems = value; RebuildVirtualList(); } else RefreshVirtualList(); }
             else
             {
                 BeginUpdate();
@@ -133,15 +138,18 @@ public class GList : GComponent
 
     public void SetVirtual() 
     { 
-        if (!_virtual) 
-        { 
-            _virtual = true; 
+        if (!_virtual)
+        {
+            _virtual = true;
+            // 先量好格子尺寸再清子项：尺寸原本只在 UpdateBounds 里从现有子项量，
+            // 清空之后就量不到了，格子会退成默认的 50 高。
+            EnsureVirtualItemSize();
             RemoveChildren();
             BindVirtualScrollListener();
-            
-            // Create SCE VirtualizingPanel if adapter supports it
+
+            // SCE 原生 VirtualizingPanel 默认不用（见 UseNativeVirtualization）。
             var adapter = SCERenderContext.Instance.Adapter;
-            if (adapter != null)
+            if (adapter != null && UseNativeVirtualization)
             {
                 try
                 {
@@ -151,15 +159,18 @@ public class GList : GComponent
                     // Configure the panel
                     // 交叉轴撑满：单列列表(垂直主轴) item 宽度=列表宽；单行列表(水平主轴) item 高度=列表高。
                     // 对齐 FairyGUI autoResizeItem 语义，否则槽宽只用 item 设计宽，item 不随列表缩放。
+                    // 原生 VirtualizingPanel 是一维的，只按主轴一个挨一个排、没有间距：
+                    // 主轴方向的槽位 = item + 行距(列距)，item 贴槽位起点，间距落在槽位末尾。
+                    // 网格（flow_hz 一行几个）它排不了 —— 要按行虚拟：列表改单列，item 用一个"一行几格"的行组件。
                     bool isHorizontal = _layout == ListLayoutType.SingleRow || _layout == ListLayoutType.FlowVertical;
                     var config = new VirtualPanelConfig
                     {
                         ItemWidth = (!isHorizontal && _autoResizeItem && Width > 0)
                             ? Width
-                            : (_itemWidth > 0 ? _itemWidth : Width),
+                            : (_itemWidth > 0 ? _itemWidth : Width) + (isHorizontal ? _columnGap : 0),
                         ItemHeight = (isHorizontal && _autoResizeItem && Height > 0)
                             ? Height
-                            : (_itemHeight > 0 ? _itemHeight : 50),
+                            : (_itemHeight > 0 ? _itemHeight : 50) + (isHorizontal ? 0 : _lineGap),
                         IsHorizontal = isHorizontal
                     };
                     adapter.SetVirtualizingPanelConfig(_virtualPanel, config);
@@ -186,6 +197,42 @@ public class GList : GComponent
     }
     
     public void SetVirtualAndLoop() => SetVirtual();
+
+    /// <summary>
+    /// 虚拟列表是否改用 SCE 原生 VirtualizingPanel。<b>默认 false：用 FGUI 层自己的虚拟化</b>（HandleScroll，
+    /// 只建视口里的项、滚动时按下标重排重画，同 FairyGUI 原版）。
+    /// 原生面板实测（SDK 39）只在手动按下标取项时生成槽位，布局阶段从不自己虚拟化 ——
+    /// 照官方 PickList 写法单独建一个挂在根上也一样，扩展方法 Items、手动调滚动回调都不行，列表因此一片空白。
+    /// 它是一维的、排不了网格，也没有行距；哪天 SDK 修好了再打开验证。
+    /// </summary>
+    public static bool UseNativeVirtualization { get; set; }
+
+    /// <summary>
+    /// 虚拟列表的格子尺寸：先看现有子项（xml 里预置的示例项），没有就取默认项（defaultItem）组件的设计尺寸。
+    /// </summary>
+    private void EnsureVirtualItemSize()
+    {
+        if (_itemWidth > 0 && _itemHeight > 0)
+        {
+            return;
+        }
+
+        foreach (var child in _children)
+        {
+            if (child.Width > 0 && child.Height > 0)
+            {
+                if (_itemWidth <= 0) _itemWidth = child.Width;
+                if (_itemHeight <= 0) _itemHeight = child.Height;
+                return;
+            }
+        }
+
+        if (!string.IsNullOrEmpty(_defaultItem) && TryResolvePoolItem(_defaultItem, out var item, out _) && item != null)
+        {
+            if (_itemWidth <= 0 && item.Width > 0) _itemWidth = item.Width;
+            if (_itemHeight <= 0 && item.Height > 0) _itemHeight = item.Height;
+        }
+    }
 
     public GObject AddItemFromPool(string? url = null)
     {
@@ -215,39 +262,44 @@ public class GList : GComponent
         // 左键点击
         item.OnClick.Add((ctx) =>
         {
-            int index = GetChildIndex(item);
-            if (_virtual)
-                index = ChildIndexToItemIndex(index);
-            
-            if (index >= 0)
+            if (GetItemIndex(item) >= 0)
             {
                 DispatchItemEvent(item, ctx, false);
             }
         });
-        
+
         // 右键点击
         item.OnRightClick.Add((ctx) =>
         {
-            int index = GetChildIndex(item);
-            if (_virtual)
-                index = ChildIndexToItemIndex(index);
-            
-            if (index >= 0)
+            if (GetItemIndex(item) >= 0)
             {
                 DispatchItemEvent(item, ctx, true);
             }
         });
     }
-    
+
+    /// <summary>
+    /// 列表项 → 项目下标（虚拟列表也适用），不是本列表的项返回 -1。
+    /// OnClickItem 回调里用它取下标：原生虚拟路径下的项不在子项里，GetChildIndex 永远是 -1。
+    /// </summary>
+    public int GetItemIndex(GObject item)
+    {
+        if (_virtual && _virtualItemIndices.TryGetValue(item, out int virtualIndex))
+        {
+            return virtualIndex < _numItems ? virtualIndex : -1;
+        }
+
+        int index = GetChildIndex(item);
+        return index >= 0 && _virtual ? ChildIndexToItemIndex(index) : index;
+    }
+
     /// <summary>
     /// 分发列表项事件
     /// </summary>
     private void DispatchItemEvent(GObject item, EventContext sourceCtx, bool isRightClick)
     {
-        int index = GetChildIndex(item);
-        if (_virtual)
-            index = ChildIndexToItemIndex(index);
-        
+        int index = GetItemIndex(item);
+
         if (index < 0) return;
         
         // 处理选择
@@ -540,6 +592,21 @@ public class GList : GComponent
             if (_numItems == 0)
                 return;
 
+            // 原生虚拟路径：滚动条长在原生 VirtualizingPanel 上，不在本列表的 ScrollPane 上，
+            // 直接按比例设它的滚动值（槽位 = item + 间距，同 SetVirtual 的配置）。
+            var nativeAdapter = SCERenderContext.Instance.Adapter;
+            if (_useNativeVirtual && _virtualPanel != null && nativeAdapter != null)
+            {
+                bool horizontal = _layout == ListLayoutType.SingleRow || _layout == ListLayoutType.FlowVertical;
+                float slot = horizontal
+                    ? (_itemWidth > 0 ? _itemWidth : 100) + _columnGap
+                    : (_itemHeight > 0 ? _itemHeight : 50) + _lineGap;
+                float maxScroll = _numItems * slot - (horizontal ? Width : Height);
+                float value = maxScroll > 0 ? index * slot / maxScroll : 0f;
+                nativeAdapter.SetScrollValue(_virtualPanel, value);
+                return;
+            }
+
             // 简化实现：计算项目的大概位置
             // 完整实现需要 UpdateBounds() 提供准确的位置信息
             System.Drawing.RectangleF rect;
@@ -737,7 +804,31 @@ public class GList : GComponent
         }
     }
 
-    private void RefreshVirtualList()
+    /// <summary>
+    /// 重刷虚拟列表内容（条数不变，数据变了时用）：已建出来的项逐个重新回调 ItemRenderer。
+    /// 条数变了直接赋 <see cref="NumItems"/>，会整表重建。
+    /// </summary>
+    public void RefreshVirtualList()
+    {
+        if (!_virtual) return;
+
+        if (_useNativeVirtual && _virtualPanel != null)
+        {
+            if (ItemRenderer == null) return;
+            foreach (var pair in _virtualItems)
+            {
+                if (pair.Key < _numItems && !pair.Value.Disposed)
+                {
+                    ItemRenderer(pair.Key, pair.Value);
+                }
+            }
+            return;
+        }
+
+        RebuildVirtualList();
+    }
+
+    private void RebuildVirtualList()
     {
         if (!_virtual) return;
 
@@ -746,11 +837,9 @@ public class GList : GComponent
         // Use SCE native VirtualizingPanel if available
         if (_useNativeVirtual && _virtualPanel != null && adapter != null)
         {
-            var renderedByNativeVirtual = false;
             EnsureNativeVirtualPanelAttached(adapter);
             adapter.SetVirtualizingPanelItems(_virtualPanel, _numItems, (index, nativeControl) =>
             {
-                renderedByNativeVirtual = true;
                 // Get or create FGUI item for this index
                 if (!_virtualItems.TryGetValue(index, out var item))
                 {
@@ -758,6 +847,9 @@ public class GList : GComponent
                     if (item != null)
                     {
                         _virtualItems[index] = item;
+                        _virtualItemIndices[item] = index;
+                        // 和 AddItemFromPool 一样挂上点击，OnClickItem 才收得到虚拟项。
+                        SetupItemClickHandler(item);
                     }
                 }
 
@@ -787,13 +879,10 @@ public class GList : GComponent
             });
 
             adapter.RefreshVirtualizingPanel(_virtualPanel);
-            if (renderedByNativeVirtual || _numItems <= 0)
-            {
-                return;
-            }
 
-            // Native virtualization callback did not fire; fall back to manual virtual path.
-            _useNativeVirtual = false;
+            // 原生面板在布局阶段才生成槽位（通常是下一帧），这里回调没触发是常态，不能据此退回手动路径：
+            // 原先同步检查没回调就改走"全部建出来"，下一帧原生回调又把项塞进槽位，两边叠在一起画错。
+            return;
         }
 
         // Manual fallback implementation (stability-first):
@@ -905,13 +994,16 @@ public class GList : GComponent
         }
 
         ScrollPane.SetContentSize(cw, ch);
-        RenderManualFallbackAllItems();
+        // 只建可见范围内的项（真正的虚拟化），数据刷新时可见项全部重画。
+        // 原先这里调 RenderManualFallbackAllItems 把所有项都建出来，虚拟列表等于没虚拟。
+        HandleScroll(true);
     }
 
     /// <summary>
-    /// 处理滚动，更新可见项目
+    /// 处理滚动，更新可见项目：只保留视口（上下各多一行）里的项，移出去的回池、进来的从池里取，按下标重排重画。
     /// </summary>
-    private void HandleScroll()
+    /// <param name="forceRender">范围没变也重画可见项（数据变了、条数没变时）。</param>
+    private void HandleScroll(bool forceRender = false)
     {
         if (!_virtual || ScrollPane == null)
             return;
@@ -984,7 +1076,7 @@ public class GList : GComponent
 
         }
 
-        if (rangeChanged)
+        if (rangeChanged || forceRender)
         {
             for (int i = 0; i < _children.Count; i++)
             {
@@ -1837,6 +1929,7 @@ public class GList : GComponent
             // Snapshot first: item.Dispose may indirectly mutate list internals.
             var virtualItems = new List<GObject>(_virtualItems.Values);
             _virtualItems.Clear();
+            _virtualItemIndices.Clear();
             for (var i = virtualItems.Count - 1; i >= 0; i--)
             {
                 virtualItems[i].Dispose();
@@ -1908,10 +2001,13 @@ public class GList : GComponent
             return;
         }
 
-        // Native virtual path is driven by VirtualizingPanel callbacks.
-        // Manual fallback path renders all items at data-refresh time.
-        // Neither mode should re-run per-scroll reposition here.
-        return;
+        // 原生路径由 VirtualizingPanel 自己的回调驱动；手动路径在这里按滚动位置换可见项。
+        if (_useNativeVirtual)
+        {
+            return;
+        }
+
+        HandleScroll();
     }
 
     private void RenderManualFallbackAllItems()
