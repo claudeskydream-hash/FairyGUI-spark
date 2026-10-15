@@ -323,6 +323,11 @@ public class SCEAdapter : ISCEAdapter
             return;
         }
 
+        if (TryMoveScaledDescendant(control, c, x, y))
+        {
+            return;
+        }
+
         c.Position(x, y);
         TrackControlPosition(control, x, y);
         if (c is Label lblP && _underlineOverlays.ContainsKey(lblP))
@@ -355,6 +360,78 @@ public class SCEAdapter : ISCEAdapter
         var scaledHeight = MathF.Max(1f, baseRect.Height * scale.Y);
         c.Position(x + (baseRect.Width - scaledWidth) * 0.5f, y + (baseRect.Height - scaledHeight) * 0.5f);
         return true;
+    }
+
+    /// <summary>
+    /// 正在缩放的根<b>底下的子控件</b>被挪了位置：同 <see cref="TryMoveScaledRoot"/>，把新位置记进它的缩放基准，
+    /// 再按根的当前缩放摆（子控件在父级局部坐标里，直接乘缩放，同 <see cref="TryApplyPanelSubtreeScaleFallback"/>）。
+    ///
+    /// 不这么做的话，缩放每一帧都按"开始缩放时拍的快照"摆它，缩放结束还原回快照 —— 缩放途中挪的位置被吞掉。
+    /// 典型场景：弹窗打开时从 0.8 放大，同时 OnShow 切控制器页、齿轮把按钮挪到这一页的位置，
+    /// 结果按钮停在上一页的位置（2026-10-14 提示框第一次弹出时「确认」压在「取消」上）。
+    /// </summary>
+    /// <returns>在正在缩放的子树里、已经处理完返回 true；否则 false，照常设位置。</returns>
+    private bool TryMoveScaledDescendant(object control, Control c, float x, float y)
+    {
+        if (!TryGetScaledDescendantBase(control, out var baseRect, out var scale))
+        {
+            return false;
+        }
+
+        baseRect.X = x;
+        baseRect.Y = y;
+        _fallbackScaleBaseRects[control] = baseRect;
+        TrackControlPosition(control, x, y);
+        c.Position(x * scale.X, y * scale.Y);
+        return true;
+    }
+
+    /// <summary>正在缩放的根底下的子控件改了尺寸：记进缩放基准，再按根的当前缩放改（见 <see cref="TryMoveScaledDescendant"/>）。</summary>
+    private void ResizeScaledDescendant(object control, Control c, float width, float height)
+    {
+        if (!TryGetScaledDescendantBase(control, out var baseRect, out var scale))
+        {
+            return;
+        }
+
+        baseRect.Width = width;
+        baseRect.Height = height;
+        _fallbackScaleBaseRects[control] = baseRect;
+
+        var scaledWidth = MathF.Max(1f, width * scale.X);
+        var scaledHeight = MathF.Max(1f, height * scale.Y);
+        c.Size(scaledWidth, scaledHeight);
+        ApplyScaledContent(control, c, scaledWidth, scaledHeight, scale.X, scale.Y);
+    }
+
+    /// <summary>
+    /// <paramref name="control"/> 是不是某个正在缩放的根底下（不含根自己）、已经拍过快照的子控件；
+    /// 是的话给出它的快照与那个根的当前缩放。没有任何根在缩放时直接返回，不往上找（SetPosition / SetSize 是热点）。
+    /// </summary>
+    private bool TryGetScaledDescendantBase(object control, out RectangleF baseRect, out PointF scale)
+    {
+        baseRect = default;
+        scale = default;
+        if (_fallbackScaleActiveRoots.Count == 0
+            || _fallbackScaleActiveRoots.Contains(control)
+            || !_fallbackScaleBaseRects.TryGetValue(control, out baseRect))
+        {
+            return false;
+        }
+
+        var node = control;
+        while (_attachedParentByChild.TryGetValue(node, out var parent))
+        {
+            if (_fallbackScaleActiveRoots.Contains(parent))
+            {
+                scale = _fallbackScaleCurrent.TryGetValue(parent, out var current) ? current : new PointF(1f, 1f);
+                return true;
+            }
+
+            node = parent;
+        }
+
+        return false;
     }
 
     public void SetScrollOverscroll(object control, float dx, float dy)
@@ -405,6 +482,10 @@ public class SCEAdapter : ISCEAdapter
             {
                 host.Size(safeWidth, safeHeight);
                 TrackControlSize(host, safeWidth, safeHeight);
+            }
+            else
+            {
+                ResizeScaledDescendant(control, c, safeWidth, safeHeight);
             }
         }
     }
@@ -654,15 +735,55 @@ public class SCEAdapter : ISCEAdapter
         return nodes;
     }
 
+    /// <summary>
+    /// 给刚开始缩放的根拍子树快照（未缩放时的位置尺寸）。
+    ///
+    /// 已经被另一个正在缩放的根（自己或祖先）管着、并拍过快照的节点<b>不重拍</b>：此刻它身上带着那个根的缩放，
+    /// 重拍就把缩过的尺寸当成了原始尺寸，两边结束时都还原到它，每缩一轮就小一圈。
+    /// 典型场景：按钮 downEffect 缩放 + 里面的 icon 有按下页的 gearSize 缩放（AutoButton），
+    /// 两者都是 Panel、共用这一本快照，原先每点一下图标就缩 0.97，点几下就明显变小（2026-10-15 底部菜单「英雄」）。
+    /// </summary>
     private void SnapshotSubtreeBaseRects(List<object> nodes)
     {
         foreach (var node in nodes)
         {
+            if (_fallbackScaleBaseRects.ContainsKey(node) && IsUnderActiveScaleRoot(node))
+            {
+                continue;
+            }
+
             if (TryResolveControlRect(node, out var rect))
             {
                 _fallbackScaleBaseRects[node] = rect;
             }
         }
+    }
+
+    /// <summary><paramref name="node"/> 自己或它的某个祖先是不是正在缩放的根。</summary>
+    private bool IsUnderActiveScaleRoot(object node)
+    {
+        if (_fallbackScaleActiveRoots.Count == 0)
+        {
+            return false;
+        }
+
+        if (_fallbackScaleActiveRoots.Contains(node))
+        {
+            return true;
+        }
+
+        var current = node;
+        while (_attachedParentByChild.TryGetValue(current, out var parent))
+        {
+            if (_fallbackScaleActiveRoots.Contains(parent))
+            {
+                return true;
+            }
+
+            current = parent;
+        }
+
+        return false;
     }
 
     private void SnapshotMissingSubtreeBaseRects(List<object> nodes)

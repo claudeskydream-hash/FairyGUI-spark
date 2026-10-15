@@ -57,6 +57,8 @@ public class SCERenderContext
     private readonly HashSet<object> _boundTouchNative = [];
     private readonly HashSet<object> _boundScrollableNative = [];
     private readonly HashSet<object> _boundScrollablePointerNative = [];
+    /// <summary>挂过"列表里子控件的拖动桥"的原生控件（见 BindScrollChildDragBridge）。</summary>
+    private readonly HashSet<object> _boundScrollChildPointerNative = [];
     private readonly HashSet<object> _boundScrollableWheelNative = [];
     private readonly HashSet<object> _boundScrollableItemPointerNative = [];
     private readonly HashSet<object> _scrollableItemCapturedNative = [];
@@ -280,6 +282,13 @@ public class SCERenderContext
             || IsHitGraph(obj)
             || IsBlockTouchImage(obj);
         _adapter.SetBlockPointerEvents(native, block);
+
+        // 拦截了指针的子控件（按钮等）按下事件到不了外面的列表，要自己接住转给列表拖动。
+        // 列表本身与输入框不挂：前者有自己的桥，后者按住要能选字。
+        if (block && obj is not GTextInput && !(obj is GComponent { ScrollPane: not null }))
+        {
+            BindScrollChildDragBridge(obj, native);
+        }
     }
 
     public void EnsureTouchBinding(GObject obj)
@@ -1278,86 +1287,18 @@ public class SCERenderContext
 
                 _adapter.OnPointerCapturedMove(native, (x, y) =>
                 {
-                    var pane = component.ScrollPane;
-                    if (pane == null || !_scrollDragStates.TryGetValue(native, out var drag))
+                    if (_scrollDragStates.TryGetValue(native, out var drag))
                     {
-                        return;
+                        MoveScrollDrag(component, native, horizontal, drag, x, y);
                     }
-
-                    if (!drag.Decided)
-                    {
-                        var dxTotal = x - drag.StartX;
-                        var dyTotal = y - drag.StartY;
-                        if (MathF.Abs(dxTotal) < ScrollDirectionThreshold && MathF.Abs(dyTotal) < ScrollDirectionThreshold)
-                        {
-                            return;
-                        }
-
-                        var dragHorizontal = MathF.Abs(dxTotal) > MathF.Abs(dyTotal);
-                        // 同轴、但自己内容没超出、外层同轴列表能滚：让给外层滚，不在内层原地弹。
-                        // （内容少的内层列表挂了回弹桥之后，不这么分流就会把外层列表的滚动截下来。）
-                        var sameAxisAncestor = dragHorizontal == horizontal && !HasOverflow(pane, horizontal)
-                            ? FindAncestorScrollable(component, dragHorizontal)
-                            : null;
-                        if (sameAxisAncestor.HasValue && HasOverflow(sameAxisAncestor.Value.Pane, sameAxisAncestor.Value.Horizontal))
-                        {
-                            drag.ActivePane = sameAxisAncestor.Value.Pane;
-                            drag.ActiveNative = sameAxisAncestor.Value.Native;
-                            drag.ActiveHorizontal = sameAxisAncestor.Value.Horizontal;
-                        }
-                        else if (dragHorizontal == horizontal)
-                        {
-                            // 拖拽方向与本列表滚动轴一致：本列表处理
-                            drag.ActivePane = pane;
-                            drag.ActiveNative = native;
-                            drag.ActiveHorizontal = horizontal;
-                        }
-                        else
-                        {
-                            // 垂直于本列表滚动轴：转发给方向匹配的滚动祖先（外层列表）
-                            var ancestor = FindAncestorScrollable(component, dragHorizontal);
-                            if (ancestor.HasValue)
-                            {
-                                drag.ActivePane = ancestor.Value.Pane;
-                                drag.ActiveNative = ancestor.Value.Native;
-                                drag.ActiveHorizontal = ancestor.Value.Horizontal;
-                            }
-                            else
-                            {
-                                drag.ActivePane = pane;
-                                drag.ActiveNative = native;
-                                drag.ActiveHorizontal = horizontal;
-                            }
-                        }
-
-                        drag.Decided = true;
-
-                        // 这一刻起本次交互算"滑动"了，松手时那一项不该再收到点击。
-                        _gestureDragged = true;
-
-                        drag.ActivePane.OnTouchBegin(drag.StartX, drag.StartY);
-                    }
-
-                    if (drag.ActivePane == null || drag.ActiveNative == null)
-                    {
-                        return;
-                    }
-
-                    // OnTouchMove 内部会经 UpdateScrollPosition → SyncScrollPaneToNative 同步到原生，
-                    // 这里不再重复推送，避免每帧双推放大抖动。
-                    drag.ActivePane.OnTouchMove(x, y);
                 });
 
                 _adapter.OnPointerRelease(native, () =>
                 {
                     _adapter.ReleasePointer(native);
-                    if (_scrollDragStates.Remove(native, out var drag)
-                        && drag.Decided
-                        && drag.ActivePane != null
-                        && drag.ActiveNative != null)
+                    if (_scrollDragStates.Remove(native, out var drag))
                     {
-                        drag.ActivePane.OnTouchEnd();
-                        SyncPaneToNative(drag.ActiveNative, drag.ActivePane, drag.ActiveHorizontal);
+                        EndScrollDrag(drag);
                     }
                 });
             }
@@ -1457,6 +1398,15 @@ public class SCERenderContext
                 if (IsDemoGraphProbe(child))
                 {
                     LogDemoGraphProbe("RenderChildAdd", child);
+                }
+
+                // 刚挂（或重新挂）到父节点上：把位置、尺寸再推一遍。
+                // 显隐控制器切隐藏时子节点会被摘下（ChildStateChanged → RemoveFromParent），切回来在这里挂回；
+                // 隐藏期间建出来的原生节点（构造时设文字就会建）位置尺寸是设在没挂进界面树的控件上的，
+                // 挂上后实测可能停在父节点原点、0×0（2026-10-14 英雄卡「已出战」文字飘到卡片外）。
+                if (_nativeParentOfChild.TryGetValue(childNative, out var nowParent) && ReferenceEquals(nowParent, parentNative))
+                {
+                    ReapplyGeometry(child, childNative);
                 }
             }
         }
@@ -1803,7 +1753,23 @@ public class SCERenderContext
         }
     }
     
-    public void UpdateSize(GObject obj) 
+    /// <summary>
+    /// 只把位置和尺寸重新推给原生节点（不碰滚动、裁剪等其它状态），给"重新挂到父节点"时补一次用，见 <see cref="RenderChild"/>。
+    /// </summary>
+    private void ReapplyGeometry(GObject obj, object native)
+    {
+        if (_adapter == null || obj is FGUIRoot)
+        {
+            return;
+        }
+
+        float scaleFactor = UIRuntime.ContentScaleFactor;
+        var renderPos = ResolveRenderPosition(obj);
+        _adapter.SetPosition(native, renderPos.X * scaleFactor, renderPos.Y * scaleFactor);
+        _adapter.SetSize(native, obj.Width * scaleFactor, obj.Height * scaleFactor);
+    }
+
+    public void UpdateSize(GObject obj)
     { 
         if (_adapter == null || obj.NativeObject == null) return;
         if (obj is FGUIRoot) return;
@@ -1974,6 +1940,8 @@ public class SCERenderContext
         _boundTouchNative.Remove(native);
         _boundScrollableNative.Remove(native);
         _boundScrollablePointerNative.Remove(native);
+        _boundScrollChildPointerNative.Remove(native);
+        _scrollDragStates.Remove(native);
         _boundScrollableWheelNative.Remove(native);
         _boundScrollableItemPointerNative.Remove(native);
         _scrollableHorizontalByNative.Remove(native);
@@ -2071,6 +2039,173 @@ public class SCERenderContext
         }
 
         return horizontalAxis ? overflowX > epsilon : overflowY > epsilon;
+    }
+
+    /// <summary>
+    /// 拖动桥的一次移动：还没判定归属时，等位移过 <see cref="ScrollDirectionThreshold"/> 再按方向决定由谁滚
+    /// （沿 <paramref name="owner"/> 自身轴则自己滚，垂直则转给外层同向列表；同轴但自己没超出、外层能滚也让给外层），
+    /// 判定后每次移动交给那个 ScrollPane。列表自己的桥与列表里子控件的桥（<see cref="BindScrollChildDragBridge"/>）共用。
+    /// </summary>
+    private void MoveScrollDrag(GComponent owner, object native, bool horizontal, ScrollDragState drag, float x, float y)
+    {
+        var pane = owner.ScrollPane;
+        if (pane == null)
+        {
+            return;
+        }
+
+        if (!drag.Decided)
+        {
+            var dxTotal = x - drag.StartX;
+            var dyTotal = y - drag.StartY;
+            if (MathF.Abs(dxTotal) < ScrollDirectionThreshold && MathF.Abs(dyTotal) < ScrollDirectionThreshold)
+            {
+                return;
+            }
+
+            var dragHorizontal = MathF.Abs(dxTotal) > MathF.Abs(dyTotal);
+            // 同轴、但自己内容没超出、外层同轴列表能滚：让给外层滚，不在内层原地弹。
+            // （内容少的内层列表挂了回弹桥之后，不这么分流就会把外层列表的滚动截下来。）
+            var sameAxisAncestor = dragHorizontal == horizontal && !HasOverflow(pane, horizontal)
+                ? FindAncestorScrollable(owner, dragHorizontal)
+                : null;
+            if (sameAxisAncestor.HasValue && HasOverflow(sameAxisAncestor.Value.Pane, sameAxisAncestor.Value.Horizontal))
+            {
+                drag.ActivePane = sameAxisAncestor.Value.Pane;
+                drag.ActiveNative = sameAxisAncestor.Value.Native;
+                drag.ActiveHorizontal = sameAxisAncestor.Value.Horizontal;
+            }
+            else if (dragHorizontal == horizontal)
+            {
+                // 拖拽方向与本列表滚动轴一致：本列表处理
+                drag.ActivePane = pane;
+                drag.ActiveNative = native;
+                drag.ActiveHorizontal = horizontal;
+            }
+            else
+            {
+                // 垂直于本列表滚动轴：转发给方向匹配的滚动祖先（外层列表）
+                var ancestor = FindAncestorScrollable(owner, dragHorizontal);
+                if (ancestor.HasValue)
+                {
+                    drag.ActivePane = ancestor.Value.Pane;
+                    drag.ActiveNative = ancestor.Value.Native;
+                    drag.ActiveHorizontal = ancestor.Value.Horizontal;
+                }
+                else
+                {
+                    drag.ActivePane = pane;
+                    drag.ActiveNative = native;
+                    drag.ActiveHorizontal = horizontal;
+                }
+            }
+
+            drag.Decided = true;
+
+            // 这一刻起本次交互算"滑动"了，松手时那一项不该再收到点击。
+            _gestureDragged = true;
+
+            drag.ActivePane.OnTouchBegin(drag.StartX, drag.StartY);
+        }
+
+        if (drag.ActivePane == null || drag.ActiveNative == null)
+        {
+            return;
+        }
+
+        // OnTouchMove 内部会经 UpdateScrollPosition → SyncScrollPaneToNative 同步到原生，
+        // 这里不再重复推送，避免每帧双推放大抖动。
+        drag.ActivePane.OnTouchMove(x, y);
+    }
+
+    /// <summary>拖动桥松手：判定过归属的，结束那个 ScrollPane 的拖动（惯性 / 回弹）并同步到原生。</summary>
+    private void EndScrollDrag(ScrollDragState drag)
+    {
+        if (drag.Decided && drag.ActivePane != null && drag.ActiveNative != null)
+        {
+            drag.ActivePane.OnTouchEnd();
+            SyncPaneToNative(drag.ActiveNative, drag.ActivePane, drag.ActiveHorizontal);
+        }
+    }
+
+    /// <summary>
+    /// 列表里会拦截指针的子控件（按钮、有命中面的图形、标了拦截的图片）也挂一座拖动桥。
+    ///
+    /// 这些控件开了 BlockPointerEvents，按下事件停在它们身上、到不了列表，列表自己的桥收不到 ——
+    /// 表现为"按在卡片上拖不动，按在卡片之间的空白处才拖得动"。这里在子控件上接住按下，往上找最近一个
+    /// 挂了拖动桥的滚动祖先，之后的方向判定、滚动、松手全走列表那一套（<see cref="MoveScrollDrag"/>）。
+    /// 不动就是普通点击；拖过了 <see cref="ScrollDirectionThreshold"/> 由 _gestureDragged 吞掉松手时的点击。
+    /// 祖先在按下时现找，子控件被池复用、换了列表也对。
+    /// </summary>
+    private void BindScrollChildDragBridge(GObject obj, object native)
+    {
+        if (_adapter == null || !_boundScrollChildPointerNative.Add(native))
+        {
+            return;
+        }
+
+        _adapter.OnPointerPressWithPosition(native, (x, y) =>
+        {
+            // 手动虚拟列表的列表项另有一座桥（BindManualVirtualItemDragBridge），不重复接。
+            if (_boundScrollableItemPointerNative.Contains(native))
+            {
+                return;
+            }
+
+            var owner = FindDragBridgedAncestor(obj);
+            if (owner == null || owner.NativeObject == null)
+            {
+                return;
+            }
+
+            _adapter.CapturePointer(native);
+            _scrollDragStates[native] = new ScrollDragState(x, y) { Owner = owner };
+        });
+
+        _adapter.OnPointerCapturedMove(native, (x, y) =>
+        {
+            if (!_scrollDragStates.TryGetValue(native, out var drag)
+                || drag.Owner == null
+                || drag.Owner.NativeObject == null)
+            {
+                return;
+            }
+
+            var owner = drag.Owner;
+            var ownerNative = owner.NativeObject;
+            var horizontal = _scrollableHorizontalByNative.TryGetValue(ownerNative, out var mapped)
+                ? mapped
+                : owner.ScrollPane?.ScrollType == ScrollType.Horizontal;
+            MoveScrollDrag(owner, ownerNative, horizontal, drag, x, y);
+        });
+
+        _adapter.OnPointerRelease(native, () =>
+        {
+            if (_scrollDragStates.Remove(native, out var drag))
+            {
+                _adapter.ReleasePointer(native);
+                EndScrollDrag(drag);
+            }
+        });
+    }
+
+    /// <summary>从 <paramref name="obj"/> 往上找最近一个挂了拖动桥（_boundScrollablePointerNative）的滚动组件；没有返回 null。</summary>
+    private GComponent? FindDragBridgedAncestor(GObject obj)
+    {
+        var parent = obj.Parent;
+        while (parent != null)
+        {
+            if (parent.ScrollPane != null
+                && parent.NativeObject != null
+                && _boundScrollablePointerNative.Contains(parent.NativeObject))
+            {
+                return parent;
+            }
+
+            parent = parent.Parent;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -2175,6 +2310,9 @@ public class SCERenderContext
         public ScrollPane? ActivePane { get; set; }
         public object? ActiveNative { get; set; }
         public bool ActiveHorizontal { get; set; }
+
+        /// <summary>子控件的桥：按下时找到的滚动祖先（列表自己的桥不用，为 null）。</summary>
+        public GComponent? Owner { get; set; }
     }
 }
 #endif

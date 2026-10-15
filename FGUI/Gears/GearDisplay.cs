@@ -682,11 +682,21 @@ public class GearColor : GearBase
 
     public GearColor(GObject owner) : base(owner) { }
 
+    /// <summary>每页的描边色（文本控件用）。只读出来存着，暂不应用：GTextField 还没有公开的描边色设置口。</summary>
+    private readonly Dictionary<string, System.Drawing.Color> _strokeStorage = new();
+
     protected override void AddStatus(string? pageId, ByteBuffer buffer)
     {
+        // 发布格式每页是两个颜色：文字色 + 描边色（同官方 Unity 版 GearColor.AddStatus）。
+        // 只读一个会让后面的数据整体错位，下一次 ReadS 读到乱码下标直接抛 IndexOutOfRange（2026-10-15 技能说明面板实测）。
         var color = buffer.ReadColor();
+        var strokeColor = buffer.ReadColor();
         if (pageId == null) _default = color;
-        else _storage[pageId] = color;
+        else
+        {
+            _storage[pageId] = color;
+            _strokeStorage[pageId] = strokeColor;
+        }
     }
 
     protected override void Init()
@@ -694,6 +704,7 @@ public class GearColor : GearBase
         if (_owner is IColorGear cg)
             _default = cg.Color;
         _storage.Clear();
+        _strokeStorage.Clear();
     }
 
     public override void Apply()
