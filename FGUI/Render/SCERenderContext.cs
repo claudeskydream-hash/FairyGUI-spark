@@ -177,6 +177,12 @@ public class SCERenderContext
             return _adapter.CreatePanel();
         }
 
+        // 引擎原生图集登记过的图：普通控件 + Image 填逻辑名，不占 Canvas 帧缓冲（见 FGUINativeAtlas）。
+        if (FGUINativeAtlas.CanUse(image))
+        {
+            return _adapter.CreatePanel();
+        }
+
         // 独立图集中的九宫格图片无需 Canvas 裁切：直接交给星火 Control.Image +
         // SlicedEdges 渲染，避免 9 次 Canvas.DrawImage 在缩放时产生接缝。
         if (CanUseNativeSlicedImage(image))
@@ -396,6 +402,29 @@ public class SCERenderContext
         var packageItem = image.PackageItem;
         if (packageItem == null)
         {
+            image.ApplyNativeVisualState();
+            return;
+        }
+
+        // 引擎原生图集：Image 填逻辑名，九宫格再设边距（见 FGUINativeAtlas）。
+        // 原生控件已经按 Canvas 建好的（开关打开之前建的）照旧走下面的 Canvas 画法。
+        if (native is not Canvas && FGUINativeAtlas.CanUse(image))
+        {
+            var logicalPath = FGUINativeAtlas.LogicalPath(packageItem);
+            if (packageItem.Scale9Grid.HasValue && !FGUINativeAtlas.SliceByConfigBorder)
+            {
+                var nativeGrid = packageItem.Scale9Grid.Value;
+                _adapter.SetSlicedImage(native, logicalPath,
+                    (int)nativeGrid.X,
+                    (int)(packageItem.Width - nativeGrid.X - nativeGrid.Width),
+                    (int)nativeGrid.Y,
+                    (int)(packageItem.Height - nativeGrid.Y - nativeGrid.Height));
+            }
+            else
+            {
+                _adapter.SetBackgroundImage(native, logicalPath);
+            }
+
             image.ApplyNativeVisualState();
             return;
         }

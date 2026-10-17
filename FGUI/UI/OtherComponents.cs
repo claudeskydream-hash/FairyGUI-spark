@@ -692,7 +692,7 @@ public class GProgressBar : GComponent
 
 public class GSlider : GComponent
 {
-    private const bool EnableSliderDiagLogs = true;
+    private const bool EnableSliderDiagLogs = false;
     private const int SliderDiagLogLimit = 160;
     private static int _sliderDiagLogCount;
     private const float MinRenderableBarWidth = 1f;
@@ -716,11 +716,33 @@ public class GSlider : GComponent
     private float _clickPercent;
     private float _gripOffsetXFromBarEdge;
     private float _gripOffsetYFromBarEdge;
+    private EventListener? _onChanged;
+    private EventListener? _onGripTouchEnd;
 
     public float Min { get => _min; set { _min = value; Update(); } }
     public float Max { get => _max; set { _max = value; Update(); } }
-    public float Value { get => _value; set { _value = Math.Clamp(value, _min, _max); if (_wholeNumbers) _value = MathF.Round(_value); Update(); DispatchEvent("onChanged", null); } }
-    public bool WholeNumbers { get => _wholeNumbers; set => _wholeNumbers = value; }
+
+    /// <summary>
+    /// 当前值。同官方 FairyGUI：代码赋值只刷新显示、<b>不触发</b> <see cref="OnChanged"/>，
+    /// 只有玩家拖动 / 点击轨道改了值才触发 —— 否则界面里"改值 → 回调 → 再改值"会绕成环。
+    /// 先设 <see cref="Min"/> / <see cref="Max"/> 再设它（赋值时按当时的上下限夹住）。
+    /// </summary>
+    public float Value { get => _value; set { _value = Math.Clamp(value, _min, _max); if (_wholeNumbers) _value = MathF.Round(_value); Update(); } }
+    public bool WholeNumbers { get => _wholeNumbers; set { _wholeNumbers = value; Update(); } }
+    public bool Reverse { get => _reverse; set { _reverse = value; Update(); } }
+    public ProgressTitleType TitleType { get => _titleType; set { _titleType = value; Update(); } }
+
+    /// <summary>点击轨道时滑块是否跳到点击处。</summary>
+    public bool ChangeOnClick { get => _changeOnClick; set => _changeOnClick = value; }
+
+    /// <summary>当前值所占比例（0~1）。</summary>
+    public double Percent => _max > _min ? Math.Clamp((_value - _min) / (_max - _min), 0f, 1f) : 0;
+
+    /// <summary>玩家拖动 / 点击轨道改了值（代码赋值不触发）。<c>AddEventListener("onChanged")</c> 同样收得到。</summary>
+    public EventListener OnChanged => _onChanged ??= new EventListener();
+
+    /// <summary>松开滑块。<c>AddEventListener("onGripTouchEnd")</c> 同样收得到。</summary>
+    public EventListener OnGripTouchEnd => _onGripTouchEnd ??= new EventListener();
 
     public override void ConstructFromResource()
     {
@@ -750,7 +772,7 @@ public class GSlider : GComponent
         {
             _gripObject.OnTouchBegin.Add(OnGripTouchBegin);
             _gripObject.OnTouchMove.Add(OnGripTouchMove);
-            _gripObject.OnTouchEnd.Add(OnGripTouchEnd);
+            _gripObject.OnTouchEnd.Add(HandleGripTouchEnd);
         }
         OnTouchBegin.Add(OnBarTouchBegin);
         LogSliderDiag(
@@ -824,6 +846,8 @@ public class GSlider : GComponent
     private void UpdateWithPercent(float percent, bool manual)
     {
         percent = Math.Clamp(percent, 0f, 1f);
+        // 改值的通知放到画完之后再发：回调里再改值时，不会被这里接着画的旧比例盖掉。
+        var changed = false;
         if (manual)
         {
             var newValue = _min + (_max - _min) * percent;
@@ -837,7 +861,7 @@ public class GSlider : GComponent
             if (MathF.Abs(newValue - _value) > 0.001f)
             {
                 _value = newValue;
-                DispatchEvent("onChanged", null);
+                changed = true;
             }
         }
 
@@ -858,42 +882,59 @@ public class GSlider : GComponent
 
         if (_barObjectH != null)
         {
-            float barWidth = fullWidth * percent;
-            if (fullWidth > 0 && barWidth <= 0)
-                barWidth = MathF.Min(MinRenderableBarWidth, fullWidth);
-            barWidth = Math.Clamp(barWidth, 0f, fullWidth);
-
-            if (_reverse)
+            if (SetFillAmount(_barObjectH, _reverse ? 1f - percent : percent))
             {
-                _barObjectH.X = _barStartX + (fullWidth - barWidth);
+                // 填充图（FGUI 里图片设了填充方式）：图本身不动，按比例裁着画；滑块按满宽算边缘。
+                _barObjectH.X = _barStartX;
+                horizontalEdge = _reverse ? _barStartX + fullWidth * (1f - percent) : _barStartX + fullWidth * percent;
             }
             else
             {
-                _barObjectH.X = _barStartX;
-            }
+                float barWidth = fullWidth * percent;
+                if (fullWidth > 0 && barWidth <= 0)
+                    barWidth = MathF.Min(MinRenderableBarWidth, fullWidth);
+                barWidth = Math.Clamp(barWidth, 0f, fullWidth);
 
-            _barObjectH.Width = barWidth;
-            horizontalEdge = _reverse ? _barObjectH.X : (_barObjectH.X + barWidth);
+                if (_reverse)
+                {
+                    _barObjectH.X = _barStartX + (fullWidth - barWidth);
+                }
+                else
+                {
+                    _barObjectH.X = _barStartX;
+                }
+
+                _barObjectH.Width = barWidth;
+                horizontalEdge = _reverse ? _barObjectH.X : (_barObjectH.X + barWidth);
+            }
         }
 
         if (_barObjectV != null)
         {
-            float barHeight = fullHeight * percent;
-            if (fullHeight > 0 && barHeight <= 0)
-                barHeight = MathF.Min(MinRenderableBarWidth, fullHeight);
-            barHeight = Math.Clamp(barHeight, 0f, fullHeight);
-
-            if (_reverse)
+            if (SetFillAmount(_barObjectV, _reverse ? 1f - percent : percent))
             {
-                _barObjectV.Y = _barStartY + (fullHeight - barHeight);
+                _barObjectV.Y = _barStartY;
+                verticalEdge = _reverse ? _barStartY + fullHeight * (1f - percent) : _barStartY + fullHeight * percent;
             }
             else
             {
-                _barObjectV.Y = _barStartY;
-            }
+                float barHeight = fullHeight * percent;
+                if (fullHeight > 0 && barHeight <= 0)
+                    barHeight = MathF.Min(MinRenderableBarWidth, fullHeight);
+                barHeight = Math.Clamp(barHeight, 0f, fullHeight);
 
-            _barObjectV.Height = barHeight;
-            verticalEdge = _reverse ? _barObjectV.Y : (_barObjectV.Y + barHeight);
+                if (_reverse)
+                {
+                    _barObjectV.Y = _barStartY + (fullHeight - barHeight);
+                }
+                else
+                {
+                    _barObjectV.Y = _barStartY;
+                }
+
+                _barObjectV.Height = barHeight;
+                verticalEdge = _reverse ? _barObjectV.Y : (_barObjectV.Y + barHeight);
+            }
         }
 
         if (_gripObject != null)
@@ -903,6 +944,27 @@ public class GSlider : GComponent
             if (_barObjectV != null)
                 _gripObject.Y = verticalEdge + _gripOffsetYFromBarEdge;
         }
+
+        if (changed)
+            NotifyChanged();
+    }
+
+    /// <summary>bar 是设了填充方式的图片时按比例填充，返回 true；否则返回 false，由调用方改宽高。同 <see cref="GProgressBar"/>。</summary>
+    private static bool SetFillAmount(GObject barObject, float amount)
+    {
+        if (barObject is GImage image && image.FillMethod != FillMethod.None)
+        {
+            image.FillAmount = amount;
+            return true;
+        }
+
+        return false;
+    }
+
+    private void NotifyChanged()
+    {
+        _onChanged?.Call(new EventContext { Sender = this, Type = "onChanged" });
+        DispatchEvent("onChanged", null);
     }
 
     private void OnGripTouchBegin(EventContext ctx)
@@ -971,10 +1033,14 @@ public class GSlider : GComponent
         UpdateWithPercent(percent, true);
     }
 
-    private void OnGripTouchEnd(EventContext ctx)
+    private void HandleGripTouchEnd(EventContext ctx)
     {
         LogSliderDiag("[FGUI][SLIDER][END] name={Name} value={Value:0.###}", Name, _value);
+        if (!_dragging)
+            return;
+
         _dragging = false;
+        _onGripTouchEnd?.Call(new EventContext { Sender = this, Type = "onGripTouchEnd" });
         DispatchEvent("onGripTouchEnd", null);
     }
 
@@ -990,18 +1056,16 @@ public class GSlider : GComponent
             return;
         }
 
+        // 同官方 FairyGUI：按点击处相对滑块中心的偏移挪 —— 滑块中心落到点击处，
+        // 不受滑块相对 bar 边缘的摆放偏移影响。
         var local = ScreenToLocal(point);
-        float percent = _max > _min ? (_value - _min) / (_max - _min) : 0f;
+        float percent = _max > _min ? Math.Clamp((_value - _min) / (_max - _min), 0f, 1f) : 0f;
+        float delta = 0f;
         if (_barObjectH != null && _barMaxWidth > 0)
-        {
-            var localPos = (local.X - _barStartX) / _barMaxWidth;
-            percent = _reverse ? (1f - localPos) : localPos;
-        }
+            delta = (local.X - (_gripObject.X + _gripObject.Width / 2f)) / _barMaxWidth;
         else if (_barObjectV != null && _barMaxHeight > 0)
-        {
-            var localPos = (local.Y - _barStartY) / _barMaxHeight;
-            percent = _reverse ? (1f - localPos) : localPos;
-        }
+            delta = (local.Y - (_gripObject.Y + _gripObject.Height / 2f)) / _barMaxHeight;
+        percent = _reverse ? percent - delta : percent + delta;
 
         LogSliderDiag(
             "[FGUI][SLIDER][BAR] name={Name} raw={RawX:0.##},{RawY:0.##} local={LocalX:0.##},{LocalY:0.##} percent={Percent:0.###}",

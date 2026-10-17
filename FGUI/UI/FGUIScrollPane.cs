@@ -260,6 +260,24 @@ public class ScrollPane
     }
 
     public void ScrollTop(bool animate = false) => SetPos(_xPos, 0, animate);
+
+    /// <summary>
+    /// 把当前滚动位置<b>强制</b>再推一次到原生面板（连同过界平移）。
+    /// <see cref="SetPos"/> 只在位置变了时才同步原生；若原生那边的偏移因故与 FGUI 不一致（面板摘下再挂回、
+    /// 回弹中途被打断留下过界平移），而 FGUI 的位置恰好没变（如已经是 0 再 <see cref="ScrollTop"/>），就永远纠正不回来 ——
+    /// 表现为列表内容整体错位、下面一片空白。重新打开面板时调一次即可。
+    /// </summary>
+    public void ResyncNative()
+    {
+        if (_tweening)
+        {
+            KillTween();
+        }
+
+        _xPos = ClampX(_xPos);
+        _yPos = ClampY(_yPos);
+        UpdateScrollPosition();
+    }
     public void ScrollBottom(bool animate = false) => SetPos(_xPos, Math.Max(0, _contentHeight - _viewHeight), animate);
     public void ScrollLeft(bool animate = false) => SetPos(0, _yPos, animate);
     public void ScrollRight(bool animate = false) => SetPos(Math.Max(0, _contentWidth - _viewWidth), _yPos, animate);

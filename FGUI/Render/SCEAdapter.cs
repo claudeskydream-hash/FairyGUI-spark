@@ -90,6 +90,8 @@ public class SCEAdapter : ISCEAdapter
     private const int ScaleDiagLogLimit = 80;
     private readonly Dictionary<Canvas, CanvasImageRenderState> _canvasImageStates = new();
     private readonly Dictionary<string, Image> _canvasImageCache = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>加载失败已经报过的图片路径（每张只报一次，失败的图每次重画都会再试）。</summary>
+    private readonly HashSet<string> _canvasImageFailLogged = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<VirtualizingPanel, VirtualizingPanelRenderState> _virtualizingPanelStates = new();
 
     private enum CanvasRenderMode
@@ -126,6 +128,15 @@ public class SCEAdapter : ISCEAdapter
         public SizeF TrimOriginalSize { get; set; }
 
         public bool Rotated { get; set; }
+
+        /// <summary>
+        /// 图片水平 / 垂直翻转（FGUI 图片的 flip）。自绘的图（图集裁出来的、九宫格）不走控件的 <c>ImageFlipX</c>，
+        /// 由 <see cref="RenderCanvasImage"/> 画之前把画布镜像过来。
+        /// </summary>
+        public bool FlipX { get; set; }
+
+        public bool FlipY { get; set; }
+
         public AtlasSlicedRenderState? AtlasSliced { get; set; }
         public Color FillColor { get; set; } = Color.Transparent;
 
@@ -283,10 +294,43 @@ public class SCEAdapter : ISCEAdapter
     /// <summary>虚拟列表面板自身的数据（spark 自己注册）。</summary>
     private static readonly GameData.GameLink<GameUI.Control.Data.GameDataControl, GameUI.Control.Data.GameDataControlVirtualizingPanel> VirtualPanelTemplate = new("FGUIVirtualListPanel");
     private static bool _virtualPanelTemplateCreated;
+    /// <summary>
+    /// 活着的 Canvas 个数（建了还没 Destroy 的）。每个 Canvas 各占一块 NanoVG 帧缓冲，引擎同时能持有的约 1000 块，
+    /// 满了以后新建的图一律画不出来、只在 logs/game 里报错（2026-10-17）。每涨过一个整百记一条日志，方便对账。
+    /// </summary>
+    public static int LiveCanvasCount { get; private set; }
+
+    /// <summary>已经记过日志的最高整百档。</summary>
+    private static int _liveCanvasLoggedStep;
+
+    /// <summary>超过它记警告：离引擎帧缓冲上限不远了。</summary>
+    private const int LiveCanvasWarnCount = 800;
+
+    private static void TrackCanvasCreated()
+    {
+        LiveCanvasCount++;
+        int step = LiveCanvasCount / 100;
+        if (step <= _liveCanvasLoggedStep)
+        {
+            return;
+        }
+
+        _liveCanvasLoggedStep = step;
+        if (LiveCanvasCount >= LiveCanvasWarnCount)
+        {
+            Game.Logger.LogWarning("[FGUI] 活着的 Canvas 已有 {Count} 个，接近引擎帧缓冲上限（约 1000），再多新建的图会画不出来", LiveCanvasCount);
+        }
+        else
+        {
+            Game.Logger.LogInformation("[FGUI] 活着的 Canvas 涨到 {Count} 个", LiveCanvasCount);
+        }
+    }
+
     public object CreateCanvas()
     {
         var canvas = new Canvas();
         canvas.Size(1f, 1f);
+        TrackCanvasCreated();
         return canvas;
     }
     
@@ -297,6 +341,7 @@ public class SCEAdapter : ISCEAdapter
         var safeWidth = ClampNativeDimension(width);
         var safeHeight = ClampNativeDimension(height);
         canvas.Size(safeWidth, safeHeight);
+        TrackCanvasCreated();
         return canvas;
     }
 
@@ -355,10 +400,8 @@ public class SCEAdapter : ISCEAdapter
         _fallbackScaleBaseRects[control] = baseRect;
         TrackControlPosition(control, x, y);
 
-        var scale = _fallbackScaleCurrent.TryGetValue(control, out var current) ? current : new PointF(1f, 1f);
-        var scaledWidth = MathF.Max(1f, baseRect.Width * scale.X);
-        var scaledHeight = MathF.Max(1f, baseRect.Height * scale.Y);
-        c.Position(x + (baseRect.Width - scaledWidth) * 0.5f, y + (baseRect.Height - scaledHeight) * 0.5f);
+        var composed = ComposeScaledRect(control, baseRect, out _);
+        c.Position(composed.X, composed.Y);
         return true;
     }
 
@@ -382,7 +425,8 @@ public class SCEAdapter : ISCEAdapter
         baseRect.Y = y;
         _fallbackScaleBaseRects[control] = baseRect;
         TrackControlPosition(control, x, y);
-        c.Position(x * scale.X, y * scale.Y);
+        var composed = ComposeScaledRect(control, baseRect, out _);
+        c.Position(composed.X, composed.Y);
         return true;
     }
 
@@ -398,10 +442,9 @@ public class SCEAdapter : ISCEAdapter
         baseRect.Height = height;
         _fallbackScaleBaseRects[control] = baseRect;
 
-        var scaledWidth = MathF.Max(1f, width * scale.X);
-        var scaledHeight = MathF.Max(1f, height * scale.Y);
-        c.Size(scaledWidth, scaledHeight);
-        ApplyScaledContent(control, c, scaledWidth, scaledHeight, scale.X, scale.Y);
+        var composed = ComposeScaledRect(control, baseRect, out var effective);
+        c.Size(composed.Width, composed.Height);
+        ApplyScaledContent(control, c, composed.Width, composed.Height, effective.X, effective.Y);
     }
 
     /// <summary>
@@ -540,6 +583,13 @@ public class SCEAdapter : ISCEAdapter
             return;
         }
 
+        // 自绘的图（Canvas）：翻转记进绘制状态、重画时镜像。必须在下面的 TryApplyNativeScale 之前做 ——
+        // Canvas 自己有个 Scale(float, float)（画布变换），会被当成"原生缩放成功"直接返回，翻转就永远轮不到。
+        if (c is Canvas flipCanvas)
+        {
+            ApplyCanvasFlip(flipCanvas, scaleX < 0f, scaleY < 0f);
+        }
+
         if (TryApplyNativeScale(c, scaleX, scaleY))
         {
             LogScaleRoute(c, scaleX, scaleY, "native");
@@ -647,6 +697,9 @@ public class SCEAdapter : ISCEAdapter
             return true;
         }
 
+        // 刚开始缩放的根：整棵子树重拍快照。快照在缩放结束后不清，上一轮留下的早已过时
+        // （面板第二次弹出、池里的格子换了内容再播出场），不重拍的话播完会被还原成上一轮的位置尺寸。
+        // 必须在下面登记之前判 —— 登记之后它就"正在缩放"了，这一支永远进不来（2026-10-17 御剑面板第二次打开图全错位）。
         if (!_fallbackScaleActiveRoots.Contains(rootControl))
         {
             SnapshotSubtreeBaseRects(nodes);
@@ -655,6 +708,10 @@ public class SCEAdapter : ISCEAdapter
         {
             SnapshotMissingSubtreeBaseRects(nodes);
         }
+
+        // 先登记再摆：下面按"所有正在缩放的根"合成，这个根自己也要算进去。
+        _fallbackScaleActiveRoots.Add(rootControl);
+        _fallbackScaleCurrent[rootControl] = new PointF(safeScaleX, safeScaleY);
 
         if (!_fallbackScaleBaseRects.TryGetValue(rootControl, out var rootRect))
         {
@@ -678,38 +735,76 @@ public class SCEAdapter : ISCEAdapter
                 continue;
             }
 
-            float scaledX;
-            float scaledY;
-            var scaledWidth = MathF.Max(1f, baseRect.Width * safeScaleX);
-            var scaledHeight = MathF.Max(1f, baseRect.Height * safeScaleY);
-
-            if (ReferenceEquals(node, rootControl))
-            {
-                // Root is in parent space: keep center fixed in parent coordinates.
-                var centerX = baseRect.X + baseRect.Width * 0.5f;
-                var centerY = baseRect.Y + baseRect.Height * 0.5f;
-                scaledX = centerX - scaledWidth * 0.5f;
-                scaledY = centerY - scaledHeight * 0.5f;
-            }
-            else
-            {
-                // Descendants are in local(parent) space: scale local rect directly.
-                scaledX = baseRect.X * safeScaleX;
-                scaledY = baseRect.Y * safeScaleY;
-            }
-
-            nodeControl.Position(scaledX, scaledY);
-            nodeControl.Size(scaledWidth, scaledHeight);
-
-            // 只改 Position/Size 不足以让画面缩小:Canvas 上的图是按「画那一刻的尺寸」
-            // 一次性画进去的,Label 的字号也不随控件尺寸走。不同步这两样,按下就只剩位移,
-            // 看起来就是「往右下角偏移而不是居中缩小」。
-            ApplyScaledContent(node, nodeControl, scaledWidth, scaledHeight, safeScaleX, safeScaleY);
+            ApplyComposedRect(node, nodeControl, baseRect);
         }
 
-        _fallbackScaleActiveRoots.Add(rootControl);
-        _fallbackScaleCurrent[rootControl] = new PointF(safeScaleX, safeScaleY);
         return true;
+    }
+
+    /// <summary>
+    /// 节点在<b>所有正在缩放的根</b>下合成后的矩形（父级局部坐标）。
+    ///
+    /// 缩放会嵌套：控件自己在 FGUI 里带 scale（如「显示已装备」勾选框 0.55），外面的弹窗打开动画又在缩整个面板。
+    /// 两者都走这套子树兜底缩放、共用一本快照，原先各算各的 —— 外层每帧按自己的倍数摆、结束时还原快照，
+    /// 把里层的 0.55 整个冲掉，控件变回原始大小（2026-10-17 法宝装配 / 飞剑上阵的勾选框）。现在一律乘起来算：
+    /// <code>
+    ///   自己是正在缩放的根   以自己的中心缩自己的倍数（中心在父级坐标里不动）
+    ///   每个是根的祖先       局部位置、尺寸都再乘那个根的倍数（子控件在父级局部坐标里，直接乘）
+    /// </code>
+    /// 只有一个根在缩放时，结果与原先单独算的完全一样。<paramref name="effective"/> 给出合成后的总倍数（字号、Canvas 重画用）。
+    /// </summary>
+    private RectangleF ComposeScaledRect(object node, RectangleF baseRect, out PointF effective)
+    {
+        var x = baseRect.X;
+        var y = baseRect.Y;
+        var width = baseRect.Width;
+        var height = baseRect.Height;
+        var totalX = 1f;
+        var totalY = 1f;
+
+        if (_fallbackScaleActiveRoots.Contains(node) && _fallbackScaleCurrent.TryGetValue(node, out var own))
+        {
+            var ownWidth = width * own.X;
+            var ownHeight = height * own.Y;
+            x += (width - ownWidth) * 0.5f;
+            y += (height - ownHeight) * 0.5f;
+            width = ownWidth;
+            height = ownHeight;
+            totalX *= own.X;
+            totalY *= own.Y;
+        }
+
+        var current = node;
+        while (_attachedParentByChild.TryGetValue(current, out var parent))
+        {
+            if (_fallbackScaleActiveRoots.Contains(parent) && _fallbackScaleCurrent.TryGetValue(parent, out var scale))
+            {
+                x *= scale.X;
+                y *= scale.Y;
+                width *= scale.X;
+                height *= scale.Y;
+                totalX *= scale.X;
+                totalY *= scale.Y;
+            }
+
+            current = parent;
+        }
+
+        effective = new PointF(totalX, totalY);
+        return new RectangleF(x, y, MathF.Max(1f, width), MathF.Max(1f, height));
+    }
+
+    /// <summary>按 <see cref="ComposeScaledRect"/> 摆好一个节点，并同步字号 / Canvas 重画。</summary>
+    private void ApplyComposedRect(object node, Control control, RectangleF baseRect)
+    {
+        var composed = ComposeScaledRect(node, baseRect, out var effective);
+        control.Position(composed.X, composed.Y);
+        control.Size(composed.Width, composed.Height);
+
+        // 只改 Position/Size 不足以让画面缩小:Canvas 上的图是按「画那一刻的尺寸」
+        // 一次性画进去的,Label 的字号也不随控件尺寸走。不同步这两样,按下就只剩位移,
+        // 看起来就是「往右下角偏移而不是居中缩小」。
+        ApplyScaledContent(node, control, composed.Width, composed.Height, effective.X, effective.Y);
     }
 
     private List<object> CollectSubtreeNodes(object rootControl)
@@ -813,6 +908,13 @@ public class SCEAdapter : ISCEAdapter
 
             if (!_fallbackScaleBaseRects.TryGetValue(node, out var baseRect))
             {
+                continue;
+            }
+
+            // 还在别的根下缩着（里层控件自己的 scale、或外面还有一层在缩）：按剩下的根合成，不要还原成原始尺寸。
+            if (IsUnderActiveScaleRoot(node))
+            {
+                ApplyComposedRect(node, control, baseRect);
                 continue;
             }
 
@@ -1362,6 +1464,15 @@ public class SCEAdapter : ISCEAdapter
         }
     }
 
+    public void SetLineSpacing(object control, float ratio)
+    {
+        // 只有 Label 有行距；输入框是单行为主，不处理。
+        if (control is Label label && label.LineSpacingRatio != ratio)
+        {
+            label.LineSpacingRatio = ratio;
+        }
+    }
+
     public void SetTextStroke(object control, Color color, float size)
     {
         // 引擎原生描边：描边由 Label 在自身文字栅格化时一并产出，无额外 Label/绘制开销
@@ -1866,6 +1977,16 @@ public class SCEAdapter : ISCEAdapter
     private void RenderCanvasImage(Canvas canvas, CanvasImageRenderState state)
     {
         canvas.ResetState();
+
+        // 翻转：图片类的绘制先把画布镜像过来（ResetState 已把变换清掉，每次重画重新套）。
+        // 图形（矩形、椭圆）左右对称，不翻。
+        if ((state.FlipX || state.FlipY) && state.RenderMode is CanvasRenderMode.AtlasRegion or CanvasRenderMode.AtlasSliced or CanvasRenderMode.PlainImage)
+        {
+            var size = ResolveRenderSize(canvas, 1f, 1f);
+            canvas.Translate(state.FlipX ? size.Width : 0f, state.FlipY ? size.Height : 0f);
+            canvas.Scale(state.FlipX ? -1f : 1f, state.FlipY ? -1f : 1f);
+        }
+
         switch (state.RenderMode)
         {
             case CanvasRenderMode.FilledEllipse:
@@ -1977,7 +2098,11 @@ public class SCEAdapter : ISCEAdapter
         }
         catch (Exception ex)
         {
-            System.GC.KeepAlive(0);
+            // 加载失败的图不会画出来，必须留痕，不能静默吞掉。
+            if (_canvasImageFailLogged.Add(resolvedImagePath))
+            {
+                Game.Logger.LogWarning("[FGUI] 图片加载失败 path={Path}：{Message}", resolvedImagePath, ex.Message);
+            }
             image = default;
             return false;
         }
@@ -2343,6 +2468,12 @@ public class SCEAdapter : ISCEAdapter
 
     private bool TryApplyNativeFlip(Control control, bool flipX, bool flipY)
     {
+        if (control is Canvas canvas)
+        {
+            ApplyCanvasFlip(canvas, flipX, flipY);
+            return true;
+        }
+
         var type = control.GetType();
         if (!_flipTypedUnsupportedTypes.Contains(type))
         {
@@ -2393,6 +2524,33 @@ public class SCEAdapter : ISCEAdapter
         }
 
         return applied || (!flipX && !flipY);
+    }
+
+    /// <summary>
+    /// 自绘的图（图集区域、九宫格都画在 Canvas 上）：控件的 <c>ImageFlipX</c> 管不到手画的内容，
+    /// 翻转记在绘制状态里，<see cref="RenderCanvasImage"/> 重画时镜像。
+    /// 没有绘制状态、也不要翻转的 Canvas 不碰 —— 不给它挂渲染回调，免得清掉别处自己画的内容。
+    /// </summary>
+    private void ApplyCanvasFlip(Canvas canvas, bool flipX, bool flipY)
+    {
+        if (!_canvasImageStates.TryGetValue(canvas, out var state))
+        {
+            if (!flipX && !flipY)
+            {
+                return;
+            }
+
+            state = EnsureCanvasImageState(canvas);
+        }
+
+        if (state.FlipX == flipX && state.FlipY == flipY)
+        {
+            return;
+        }
+
+        state.FlipX = flipX;
+        state.FlipY = flipY;
+        RenderCanvasImage(canvas, state);
     }
 
     private static bool TryApplyNativeScale(Control control, float scaleX, float scaleY)
@@ -3837,9 +3995,22 @@ public class SCEAdapter : ISCEAdapter
             _virtualizingPanelStates.Remove(vp);
         }
         ClearHierarchyTracking(control, clearChildren: true);
-        
-        if (control is Control c)
+
+        // 必须 Destroy，只摘下不销毁会一直占着渲染资源（官方文档 Control.RemoveFromParent 的说明）：
+        // 每个 Canvas（FGUI 的每张图）各占一块 NanoVG 帧缓冲，引擎能同时持有的有上限（实测 1000 块），
+        // 图标每换一次（GLoader 换地址 = 旧图销毁、新建一张）就漏一块。攒满后新建的图一律画不出来，
+        // 引擎只在 logs/game/editor-*.log 里报 "Failed to create NanoVG framebuffer"，
+        // 表现为玩一段时间后界面大面积缺图（2026-10-17）。
+        // GComponent 先销毁子级再销毁自己，子控件的原生对象到这里时多半已经各自销毁过，不重复。
+        if (control is Control c && !c.IsDisposed)
+        {
             c.RemoveFromParent();
+            c.Destroy();
+            if (c is Canvas)
+            {
+                LiveCanvasCount--;
+            }
+        }
     }
 
     private static PointerButtons BuildPrimaryCaptureButtons()

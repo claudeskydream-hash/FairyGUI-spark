@@ -10,7 +10,16 @@ namespace FairyGUI;
 public class GTextField : GObject
 {
     // 静态标志：记录哪些警告已经显示过（避免重复警告）
-    private static bool _warnedLeading = false;
+    private static bool _warnedLetterSpacing = false;
+
+    /// <summary>FGUI 编辑器里文本的默认行距（leading）。运行时以它为基准：等于它就保持引擎默认行高。</summary>
+    private const int DefaultLeading = 3;
+
+    /// <summary>
+    /// 引擎默认行高 ≈ 字号 × 这个数（常见中文字体的推荐行高约 1.2 倍字号）。
+    /// 引擎只收"相对默认行高的比例"，拿不到实际行高，只能按它估算。
+    /// </summary>
+    private const float EstimatedLineHeightPerFontSize = 1.2f;
     
     protected string _text = "";
     protected bool _ubbEnabled;
@@ -55,6 +64,17 @@ public class GTextField : GObject
     public VertAlignType VerticalAlign { get => _verticalAlign; set { _verticalAlign = value; UpdateDisplay(); } }
     public bool Bold { get => _bold; set { _bold = value; UpdateDisplay(); } }
     public bool Italic { get => _italic; set { _italic = value; UpdateDisplay(); } }
+    /// <summary>行距（像素，同 FGUI 编辑器的 leading，默认 3）。</summary>
+    public int Leading { get => _leading; set { _leading = value; UpdateDisplay(); } }
+
+    /// <summary>FGUI leading（像素）→ 引擎 LineSpacingRatio（相对默认行高额外加的比例）。</summary>
+    private static float LineSpacingRatioOf(int leading, int fontSize)
+    {
+        if (leading == DefaultLeading || fontSize <= 0)
+            return 0f;
+
+        return (leading - DefaultLeading) / (fontSize * EstimatedLineHeightPerFontSize);
+    }
 
     public GTextField SetVar(string name, string value)
     {
@@ -265,6 +285,11 @@ public class GTextField : GObject
         // 不关掉换行的话「开始游戏」这种四字标题会被折成两行。
         adapter.SetTextWrap(NativeObject, !_singleLine);
 
+        // 行距：FGUI 的 leading 是行与行之间额外的像素，默认 3。引擎 Label.LineSpacingRatio 是
+        // "相对默认行高额外加的比例"，按 (leading - 默认) ÷ 估算行高 换算 —— 默认 leading 的文本保持引擎默认行高不变，
+        // 调过行距的（如竖排文字填负数收紧）才生效。负数能收紧多少取决于引擎是否接受负比例。
+        adapter.SetLineSpacing(NativeObject, LineSpacingRatioOf(_leading, _fontSize));
+
         // 描边：引擎原生支持，直接套用（无描边时显式清零，避免控件复用残留）
         if (_strokeColor.HasValue)
             adapter.SetTextStroke(NativeObject, _strokeColor.Value, _strokeSize);
@@ -281,17 +306,16 @@ public class GTextField : GObject
         // 若哪天 <u> 的层级/位置不满足需求，把上面 <u> 包裹去掉、这里改回传 _underline 即可切换。
         adapter.SetTextUnderline(NativeObject, false, Width, Height);
 
-        // 记录暂不支持的特性（每种警告只记录一次，避免日志冗余）
-        if ((_leading != 0 || _letterSpacing != 0) && !_warnedLeading)
+        // 字距：引擎 Label 没有字距属性（只有 Canvas 自绘文字有），暂不支持（警告只记录一次，避免日志冗余）
+        if (_letterSpacing != 0 && !_warnedLetterSpacing)
         {
             var preview = displayText.Length > 32 ? $"{displayText[..32]}..." : displayText;
             Game.Logger.LogWarning(
-                "[FGUI] TextField leading/letterSpacing not supported in SCE (this warning will only show once). name={Name}, leading={Leading}, letterSpacing={LetterSpacing}, text='{Preview}'",
+                "[FGUI] TextField letterSpacing not supported in SCE (this warning will only show once). name={Name}, letterSpacing={LetterSpacing}, text='{Preview}'",
                 Name,
-                _leading,
                 _letterSpacing,
                 preview);
-            _warnedLeading = true;
+            _warnedLetterSpacing = true;
         }
 
         // TODO: 实现AutoSize逻辑

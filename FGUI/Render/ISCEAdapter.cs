@@ -72,6 +72,11 @@ public interface ISCEAdapter
     /// 按钮标题这类文本框宽度往往小于文字实际宽度，不关掉换行就会被折成多行。
     /// </summary>
     void SetTextWrap(object control, bool wrap);
+    /// <summary>
+    /// 设置行距：<paramref name="ratio"/> = 相对字体默认行高<b>额外</b>加的比例（引擎 Label.LineSpacingRatio：
+    /// 0 = 默认行高，0.5 = 1.5 倍）。对应 FGUI 的 <c>leading</c>（行距），换算在 GTextField 里做。
+    /// </summary>
+    void SetLineSpacing(object control, float ratio);
     /// <summary>设置文字描边（size&lt;=0 表示关闭）。</summary>
     void SetTextStroke(object control, Color color, float size);
     /// <summary>设置文字阴影（offset 为像素偏移，Transparent/零偏移表示关闭）。</summary>
