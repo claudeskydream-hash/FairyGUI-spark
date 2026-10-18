@@ -3347,10 +3347,68 @@ public class SCEAdapter : ISCEAdapter
 
             _attachedParentByChild[trackKey] = parent;
 
+            // 挂进了正在缩放（含 FGUI 里静态带 scale）的子树：补记缩放基准、按缩放摆（见 ApplyScaleToAttached）。
+            if (IsUnderActiveScaleRoot(trackKey))
+            {
+                ApplyScaleToAttached(trackKey);
+            }
+
             // Label 刚挂到父级：把它的下划线覆盖层作为兄弟同步进同一个父级
             if (c is Label lblA && _underlineOverlays.ContainsKey(lblA))
                 SyncUnderlineOverlay(c);
         }
+    }
+
+    /// <summary>
+    /// 控件挂进了一棵正在缩放的子树（根在缩放动画中，或 FGUI 里组件自己带 scale —— 后者一直算"正在缩放"）：
+    /// 给它记缩放基准，再按祖先的缩放摆。
+    ///
+    /// 缩放快照只在根开始缩放时拍一次，之后才挂进来的控件不在里面，AddChild 又是按原值摆的 —— 结果它不跟着缩。
+    /// 后挂的情况很常见：不可见的子控件不挂（SyncNativeChildOrder 跳过），齿轮让它显示时才挂；
+    /// 装载器的内容换图时才建、才挂。典型表现：带 scale 的技能格（法宝本命神通 1.154）切换内容后图标歪、
+    /// 空格子的金属框不居中（2026-10-18）。
+    ///
+    /// 基准位置取跟踪的位置（SetPosition 记的一直是未缩放的值），尺寸取 <c>_baseControlSizes</c>（SetSize 的原值）——
+    /// 不能取 <c>_controlSizes</c>，缩放过的控件那里存的是缩放后的尺寸，拿它当基准会缩两遍。
+    /// 挂进来的是组件（Panel）时，它底下早先挂好的子控件也一并补上（已有基准的不重记）。
+    /// </summary>
+    private void ApplyScaleToAttached(object attached)
+    {
+        if (TryResolveBaseRect(attached, out var rect))
+        {
+            _fallbackScaleBaseRects[attached] = rect;
+        }
+
+        var nodes = attached is Panel ? CollectSubtreeNodes(attached) : new List<object> { attached };
+        foreach (var node in nodes)
+        {
+            if (!_fallbackScaleBaseRects.ContainsKey(node) && TryResolveBaseRect(node, out var nodeRect))
+            {
+                _fallbackScaleBaseRects[node] = nodeRect;
+            }
+
+            if (node is Control nodeControl && _fallbackScaleBaseRects.TryGetValue(node, out var baseRect))
+            {
+                ApplyComposedRect(node, nodeControl, baseRect);
+            }
+        }
+    }
+
+    /// <summary>控件未缩放时的矩形：位置取跟踪值，尺寸优先取 SetSize 的原值（见 <see cref="ApplyScaleToAttached"/>）。</summary>
+    private bool TryResolveBaseRect(object control, out RectangleF rect)
+    {
+        if (!TryResolveControlRect(control, out rect))
+        {
+            return false;
+        }
+
+        if (_baseControlSizes.TryGetValue(control, out var baseSize))
+        {
+            rect.Width = MathF.Max(1f, baseSize.Width);
+            rect.Height = MathF.Max(1f, baseSize.Height);
+        }
+
+        return true;
     }
 
     public void RemoveChild(object parent, object child)

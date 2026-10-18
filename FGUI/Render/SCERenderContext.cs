@@ -19,7 +19,6 @@ public class SCERenderContext
     private readonly Dictionary<object, ScrollDragState> _scrollDragStates = new();
     private readonly Dictionary<object, object> _nativeParentOfChild = new();
     private readonly HashSet<object> _boundButtonNative = [];
-    private readonly HashSet<object> _boundButtonRelayNative = [];
     private readonly HashSet<object> _boundGenericClickNative = [];
 
     /// <summary>
@@ -816,37 +815,19 @@ public class SCERenderContext
             return;
         }
 
+        // 绑定时的转发目标只用来判"要不要挂回调"；回调里一律现找（ResolveTouchRelayTarget）。
+        // 原因：控件建好、绑上回调的时候，祖先往往还没挂监听（列表项是渲染回调里才包 Cell、挂 OnClick 的），
+        // 那时定死的转发目标是 null，之后祖先挂了监听也收不到 —— 表现为"列表里只有最后建的那一项点得动"。
         var relayTarget = ResolveTouchRelayTarget(obj);
-        var relayButton = relayTarget as GButton;
-        var comboInputPath = EnableComboInputDiagLogs && (obj is GComboBox || relayTarget is GComboBox);
         var shouldBind = ShouldBindTouchEvents(obj, relayTarget);
-        var alreadyBound = _boundTouchNative.Contains(native);
-        if (comboInputPath)
-        {
-            System.GC.KeepAlive(0);
-        }
-
         if (!shouldBind || !_boundTouchNative.Add(native))
         {
             return;
         }
 
-        if (comboInputPath)
-        {
-            System.GC.KeepAlive(0);
-        }
-
         _adapter.OnPointerPressWithPosition(native, (x, y) =>
         {
-            if (ShouldLogButtonDiag(obj))
-            {
-                System.GC.KeepAlive(0);
-            }
-
-            if (comboInputPath)
-            {
-                System.GC.KeepAlive(0);
-            }
+            var relayTarget = ResolveTouchRelayTarget(obj);
 
             // 新的一次按下 = 新的一次交互，把上一次的派发记录和滑动标记都清掉。
             // 同一次按下会被多个重叠子控件各收一遍，重复清无害。
@@ -864,11 +845,6 @@ public class SCERenderContext
 
             if (relayTarget != null)
             {
-                if (relayButton != null && ShouldLogButtonDiag(relayButton))
-                {
-                    System.GC.KeepAlive(0);
-                }
-
                 var relayContext = new EventContext
                 {
                     Sender = relayTarget,
@@ -894,7 +870,7 @@ public class SCERenderContext
                 return;
             }
 
-            var moveRecipient = relayTarget ?? obj;
+            var moveRecipient = ResolveTouchRelayTarget(obj) ?? obj;
             var movePoint = new PointF(x, y);
             var moveContext = new EventContext
             {
@@ -907,11 +883,7 @@ public class SCERenderContext
 
         _adapter.OnPointerRelease(native, () =>
         {
-            if (ShouldLogButtonDiag(obj))
-            {
-                System.GC.KeepAlive(0);
-            }
-
+            var relayTarget = ResolveTouchRelayTarget(obj);
             if (_touchCapturedNative.Remove(native))
             {
                 _adapter.ReleasePointer(native);
@@ -926,11 +898,6 @@ public class SCERenderContext
 
             if (relayTarget != null)
             {
-                if (relayButton != null && ShouldLogButtonDiag(relayButton))
-                {
-                    System.GC.KeepAlive(0);
-                }
-
                 var relayContext = new EventContext
                 {
                     Sender = relayTarget,
@@ -940,56 +907,32 @@ public class SCERenderContext
             }
         });
 
-        if (relayTarget != null && _boundButtonRelayNative.Add(native))
+        // 按钮自己的点击在 ApplyButtonProperties 里挂；其余控件点击时现找目标：
+        // 有挂了监听的祖先就转给它（FGUI 的冒泡），没有就派发给自己。
+        if (obj is not GButton && _boundGenericClickNative.Add(native))
         {
             _adapter.OnClick(native, () =>
             {
-                if (relayButton != null && ShouldLogButtonDiag(relayButton))
-                {
-                    System.GC.KeepAlive(0);
-                }
-                else if (EnableComboInputDiagLogs && relayTarget is GComboBox)
-                {
-                    System.GC.KeepAlive(0);
-                }
-
                 if (_gestureDragged)
                 {
                     return;
                 }
 
-                // 同一次交互里这个祖先已经收到过转发就不再转发。
+                var target = ResolveTouchRelayTarget(obj) ?? obj;
+
+                // 同一次交互里这个目标已经收到过就不再派发。
                 // 一个 cell 里底图、图标、文字都会各转发一次，不挡的话业务回调要跑好几遍：
                 // 幂等的回调（开个页面）看着正常，开关类的回调则"开了又关"，
                 // 而真正危险的是像建造摆放那样第二遍会把刚建好的原生对象销毁重建 —— 直接崩进程。
-                if (!_clickDispatchedInGesture.Add(relayTarget))
+                if (!_clickDispatchedInGesture.Add(target))
                 {
                     return;
                 }
 
-                relayTarget.DispatchEvent("onClick", null);
+                target.DispatchEvent("onClick", null);
             });
-            _adapter.OnPointerEnter(native, () => relayTarget.DispatchEvent("onRollOver", null));
-            _adapter.OnPointerLeave(native, () => relayTarget.DispatchEvent("onRollOut", null));
-        }
-        else if (relayTarget == null && obj is not GButton && _boundGenericClickNative.Add(native))
-        {
-            _adapter.OnClick(native, () =>
-            {
-                if (EnableComboInputDiagLogs && obj is GComboBox)
-                {
-                    System.GC.KeepAlive(0);
-                }
-
-                if (_gestureDragged || !_clickDispatchedInGesture.Add(obj))
-                {
-                    return;
-                }
-
-                obj.DispatchEvent("onClick", null);
-            });
-            _adapter.OnPointerEnter(native, () => obj.DispatchEvent("onRollOver", null));
-            _adapter.OnPointerLeave(native, () => obj.DispatchEvent("onRollOut", null));
+            _adapter.OnPointerEnter(native, () => (ResolveTouchRelayTarget(obj) ?? obj).DispatchEvent("onRollOver", null));
+            _adapter.OnPointerLeave(native, () => (ResolveTouchRelayTarget(obj) ?? obj).DispatchEvent("onRollOut", null));
         }
     }
 
@@ -1964,7 +1907,6 @@ public class SCERenderContext
             _movieClipFramePathCache.Remove(movieClip);
         }
         _boundButtonNative.Remove(native);
-        _boundButtonRelayNative.Remove(native);
         _boundGenericClickNative.Remove(native);
         _boundTouchNative.Remove(native);
         _boundScrollableNative.Remove(native);
