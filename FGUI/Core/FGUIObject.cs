@@ -218,6 +218,27 @@ public class GObject : EventDispatcher
 
     public bool Enabled { get => !_grayed && _touchable; set { Grayed = !value; Touchable = value; } }
 
+    /// <summary>
+    /// 事件穿透：自己和整个子树都不拦截、不响应指针事件（按钮也一样），按下 / 点击交给外面最近一个能响应的祖先。
+    /// FGUI 里由 AzureSailBoardGenerator 插件的「事件穿透」在自定义数据里写一行 <see cref="SCERenderContext.PassTouchMarker"/>，
+    /// 加载时读成这个开关（不靠事后读 <see cref="Data"/>：列表格子的 Data 常被业务代码改写成 Cell）。
+    /// 与 <see cref="Touchable"/> 无关，那条链路不动。
+    /// </summary>
+    public bool PassTouch
+    {
+        get => _passTouch;
+        set
+        {
+            if (_passTouch != value)
+            {
+                _passTouch = value;
+                SCERenderContext.Instance.RefreshPassTouch(this);
+            }
+        }
+    }
+
+    private bool _passTouch;
+
     public int SortingOrder
     {
         get => _sortingOrder;
@@ -402,6 +423,7 @@ public class GObject : EventDispatcher
         if (filter == 1) { buffer.ReadFloat(); buffer.ReadFloat(); buffer.ReadFloat(); buffer.ReadFloat(); }
         string? str = buffer.ReadS();
         if (str != null) Data = str;
+        if (SCERenderContext.HasMarkerLine(str, SCERenderContext.PassTouchMarker)) PassTouch = true;
     }
 
     public virtual void Setup_AfterAdd(ByteBuffer buffer, int beginPos)

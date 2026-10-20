@@ -281,11 +281,13 @@ public class SCERenderContext
 
         // 输入框也必须拦截指针:否则点击穿透到父级,原生 Input 收不到按下事件、无法聚焦输入。
         // 有形状的图形也挡（见 IsHitGraph）；自定义数据里标了拦截的图片也挡（见 IsBlockTouchImage）。
-        var block = obj is GButton
-            || obj is GTextInput
-            || (obj is GComponent component && component.ScrollPane != null)
-            || IsHitGraph(obj)
-            || IsBlockTouchImage(obj);
+        // 事件穿透的子树一律不拦（见 GObject.PassTouch），按下顺着原生路由交给外面。
+        var block = FindPassTouchRoot(obj) == null
+            && (obj is GButton
+                || obj is GTextInput
+                || (obj is GComponent component && component.ScrollPane != null)
+                || IsHitGraph(obj)
+                || IsBlockTouchImage(obj));
         _adapter.SetBlockPointerEvents(native, block);
 
         // 拦截了指针的子控件（按钮等）按下事件到不了外面的列表，要自己接住转给列表拖动。
@@ -796,15 +798,17 @@ public class SCERenderContext
                     System.GC.KeepAlive(0);
                 }
 
-                if (_gestureDragged || !_clickDispatchedInGesture.Add(button))
+                // 事件穿透的按钮自己不响应，点击交给外面最近一个能响应的祖先（见 GObject.PassTouch）。
+                var target = FindPassTouchRoot(button) != null ? ResolveTouchRelayTarget(button) : button;
+                if (_gestureDragged || target == null || !_clickDispatchedInGesture.Add(target))
                 {
                     return;
                 }
 
-                button.DispatchEvent("onClick", null);
+                target.DispatchEvent("onClick", null);
             });
-            _adapter.OnPointerEnter(native, () => button.DispatchEvent("onRollOver", null));
-            _adapter.OnPointerLeave(native, () => button.DispatchEvent("onRollOut", null));
+            _adapter.OnPointerEnter(native, () => ButtonHoverTarget(button)?.DispatchEvent("onRollOver", null));
+            _adapter.OnPointerLeave(native, () => ButtonHoverTarget(button)?.DispatchEvent("onRollOut", null));
         }
     }
 
@@ -828,6 +832,8 @@ public class SCERenderContext
         _adapter.OnPointerPressWithPosition(native, (x, y) =>
         {
             var relayTarget = ResolveTouchRelayTarget(obj);
+            // 事件穿透（见 GObject.PassTouch）：自己不收，只转给外面；也不抢指针，让外面的列表照常拖动。
+            var passing = FindPassTouchRoot(obj) != null;
 
             // 新的一次按下 = 新的一次交互，把上一次的派发记录和滑动标记都清掉。
             // 同一次按下会被多个重叠子控件各收一遍，重复清无害。
@@ -835,13 +841,16 @@ public class SCERenderContext
             _gestureDragged = false;
 
             var beginPoint = new PointF(x, y);
-            var beginContext = new EventContext
+            if (!passing)
             {
-                Sender = obj,
-                Type = "onTouchBegin",
-                Data = beginPoint
-            };
-            obj.DispatchEventWithContext("onTouchBegin", beginContext, beginPoint);
+                var beginContext = new EventContext
+                {
+                    Sender = obj,
+                    Type = "onTouchBegin",
+                    Data = beginPoint
+                };
+                obj.DispatchEventWithContext("onTouchBegin", beginContext, beginPoint);
+            }
 
             if (relayTarget != null)
             {
@@ -854,7 +863,7 @@ public class SCERenderContext
                 relayTarget.DispatchEventWithContext("onTouchBegin", relayContext, beginPoint);
             }
 
-            if (!ShouldCaptureForTouchMove(obj, relayTarget))
+            if (passing || !ShouldCaptureForTouchMove(obj, relayTarget))
             {
                 return;
             }
@@ -889,12 +898,15 @@ public class SCERenderContext
                 _adapter.ReleasePointer(native);
             }
 
-            var endContext = new EventContext
+            if (FindPassTouchRoot(obj) == null)
             {
-                Sender = obj,
-                Type = "onTouchEnd"
-            };
-            obj.DispatchEventWithContext("onTouchEnd", endContext, null);
+                var endContext = new EventContext
+                {
+                    Sender = obj,
+                    Type = "onTouchEnd"
+                };
+                obj.DispatchEventWithContext("onTouchEnd", endContext, null);
+            }
 
             if (relayTarget != null)
             {
@@ -918,7 +930,12 @@ public class SCERenderContext
                     return;
                 }
 
-                var target = ResolveTouchRelayTarget(obj) ?? obj;
+                // 事件穿透的控件没有可转的祖先就谁也不给。
+                var target = ResolveTouchRelayTarget(obj) ?? (FindPassTouchRoot(obj) != null ? null : obj);
+                if (target == null)
+                {
+                    return;
+                }
 
                 // 同一次交互里这个目标已经收到过就不再派发。
                 // 一个 cell 里底图、图标、文字都会各转发一次，不挡的话业务回调要跑好几遍：
@@ -931,8 +948,8 @@ public class SCERenderContext
 
                 target.DispatchEvent("onClick", null);
             });
-            _adapter.OnPointerEnter(native, () => (ResolveTouchRelayTarget(obj) ?? obj).DispatchEvent("onRollOver", null));
-            _adapter.OnPointerLeave(native, () => (ResolveTouchRelayTarget(obj) ?? obj).DispatchEvent("onRollOut", null));
+            _adapter.OnPointerEnter(native, () => GenericHoverTarget(obj)?.DispatchEvent("onRollOver", null));
+            _adapter.OnPointerLeave(native, () => GenericHoverTarget(obj)?.DispatchEvent("onRollOut", null));
         }
     }
 
@@ -989,20 +1006,82 @@ public class SCERenderContext
     /// </summary>
     private static bool IsBlockTouchImage(GObject obj)
     {
-        if (obj is not GImage || !obj.Touchable || obj.Data is not string data || data.Length == 0)
+        return obj is GImage && obj.Touchable && HasMarkerLine(obj.Data as string, BlockTouchMarker);
+    }
+
+    /// <summary>
+    /// 组件自定义数据（customData）里写了这一行，就事件穿透（见 <see cref="GObject.PassTouch"/>）。
+    /// 编辑器里由 AzureSailBoardGenerator 插件的「事件穿透」写入（pass-touch-marker.js 的 MARKER，改一处要两处一起改）。
+    /// </summary>
+    public const string PassTouchMarker = "Spark.PassTouch=1";
+
+    /// <summary>自定义数据里有没有独占一行的 <paramref name="marker"/>（忽略大小写与首尾空白）。</summary>
+    public static bool HasMarkerLine(string? data, string marker)
+    {
+        if (string.IsNullOrEmpty(data))
         {
             return false;
         }
 
         foreach (var line in data.Split('\n'))
         {
-            if (string.Equals(line.Trim(), BlockTouchMarker, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(line.Trim(), marker, StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// 自己或祖先里<b>最外层</b>开了事件穿透的那个；都没开返回 null。
+    /// 取最外层：转发时从它的父级往上找，整棵穿透子树都越过去。
+    /// </summary>
+    private static GObject? FindPassTouchRoot(GObject obj)
+    {
+        GObject? root = null;
+        for (GObject? node = obj; node != null; node = node.Parent)
+        {
+            if (node.PassTouch)
+            {
+                root = node;
+            }
+        }
+
+        return root;
+    }
+
+    /// <summary>按钮移入 / 移出派发给谁：事件穿透的按钮交给外面能响应的祖先（没有就不派发），否则给它自己。</summary>
+    private static GObject? ButtonHoverTarget(GButton button)
+    {
+        return FindPassTouchRoot(button) != null ? ResolveTouchRelayTarget(button) : button;
+    }
+
+    /// <summary>非按钮控件移入 / 移出派发给谁：有可转的祖先给祖先；没有时事件穿透的谁也不给，否则给它自己。</summary>
+    private static GObject? GenericHoverTarget(GObject obj)
+    {
+        return ResolveTouchRelayTarget(obj) ?? (FindPassTouchRoot(obj) != null ? null : obj);
+    }
+
+    /// <summary>
+    /// 事件穿透开关变了：整棵子树按新状态重判一次"挂不挂指针回调、拦不拦点击"。
+    /// 回调里每次都现判穿透，这里只需要把原生拦截改对（原生控件还没建的节点，渲染时自然按新状态判）。
+    /// </summary>
+    internal void RefreshPassTouch(GObject obj)
+    {
+        if (obj.NativeObject != null)
+        {
+            RefreshPointerBlocking(obj);
+        }
+
+        if (obj is GComponent component)
+        {
+            foreach (var child in component.Children)
+            {
+                RefreshPassTouch(child);
+            }
+        }
     }
 
     private static bool HasAnyTouchListener(GObject obj)
@@ -1065,12 +1144,14 @@ public class SCERenderContext
 
     private static GObject? ResolveTouchRelayTarget(GObject obj)
     {
-        if (obj is GButton || HasAnyTouchListener(obj))
+        // 在事件穿透的子树里：越过整棵子树（包括里面的按钮），从穿透根的父级往上找。
+        var passRoot = FindPassTouchRoot(obj);
+        if (passRoot == null && (obj is GButton || HasAnyTouchListener(obj)))
         {
             return null;
         }
 
-        var parent = obj.Parent;
+        var parent = (passRoot ?? obj).Parent;
         while (parent != null)
         {
             if (HasAnyTouchListener(parent))
@@ -2118,7 +2199,8 @@ public class SCERenderContext
         _adapter.OnPointerPressWithPosition(native, (x, y) =>
         {
             // 手动虚拟列表的列表项另有一座桥（BindManualVirtualItemDragBridge），不重复接。
-            if (_boundScrollableItemPointerNative.Contains(native))
+            // 事件穿透的控件不抢指针：按下顺着原生路由到外面能响应的祖先，由它的桥带动列表。
+            if (_boundScrollableItemPointerNative.Contains(native) || FindPassTouchRoot(obj) != null)
             {
                 return;
             }

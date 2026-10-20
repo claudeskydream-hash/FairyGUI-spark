@@ -514,6 +514,12 @@ public class SCEAdapter : ISCEAdapter
             }
 
             c.Size(safeWidth, safeHeight);
+            if (IsMeasuringAutoHeight(c))
+            {
+                // 正在量文字高度（RequestAutoHeight）：宽度照改，高度继续交给引擎排。
+                c.Height = AutoMode.Auto;
+            }
+
             TrackControlSize(control, safeWidth, safeHeight);
             _baseControlSizes[control] = new SizeF(safeWidth, safeHeight);
 
@@ -1472,6 +1478,53 @@ public class SCEAdapter : ISCEAdapter
             label.LineSpacingRatio = ratio;
         }
     }
+
+    /// <summary>还没量完的自动高度请求：文字控件 → 量完回调。弱引用表，控件销毁了自然丢掉。</summary>
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Label, Action<SizeF>> _autoHeightRequests = new();
+
+    /// <summary>已经挂过尺寸变化回调的文字控件（每个只挂一次）。</summary>
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Label, object> _autoHeightHooked = new();
+
+    public void RequestAutoHeight(object control, Action<SizeF> measured)
+    {
+        if (control is not Label label)
+        {
+            return;
+        }
+
+        _autoHeightRequests.AddOrUpdate(label, measured);
+        if (!_autoHeightHooked.TryGetValue(label, out _))
+        {
+            _autoHeightHooked.Add(label, label);
+            label.OnSizeChanged += (_, _) => OnAutoHeightLabelSized(label);
+        }
+
+        // 宽度保持 FGUI 给的，高度交给引擎按内容排（换行后几行就多高）。
+        label.Height = AutoMode.Auto;
+    }
+
+    /// <summary>引擎排完版、文字控件尺寸变了：有没量完的请求就把实际尺寸交回去。</summary>
+    private void OnAutoHeightLabelSized(Label label)
+    {
+        if (!_autoHeightRequests.TryGetValue(label, out var measured) || !label.Height.IsAuto)
+        {
+            return;
+        }
+
+        var size = label.ActualSize;
+        if (size.Width <= 0f || size.Height <= 0f)
+        {
+            // 藏着的控件不排版，等显示出来再量。
+            return;
+        }
+
+        _autoHeightRequests.Remove(label);
+        measured(size);
+    }
+
+    /// <summary>这个文字控件是不是正在等量高度（期间 FGUI 改尺寸也要保持高度自动，否则量不出来）。</summary>
+    private bool IsMeasuringAutoHeight(Control control)
+        => control is Label label && _autoHeightRequests.TryGetValue(label, out _);
 
     public void SetTextStroke(object control, Color color, float size)
     {
@@ -3490,11 +3543,16 @@ public class SCEAdapter : ISCEAdapter
         // 这条路径很容易走到：把列表设成不可见(控制器切页、Gear 显示)时，
         // GComponent.ChildStateChanged 走的就是 RemoveFromParent。
         // 销毁另有 Dispose 自己的外壳回收，不经过这里。
+        //
+        // 摘下前先看它是不是正在跟着某个祖先缩放（弹窗 0.8 → 1 的打开动画）：是的话摘下后整棵子树还原成缩放前的快照，见 RestoreDetachedScaledSubtree。
+        var scaledByAncestor = IsScaledByAncestor(control);
         if (_scrollClipHost.TryGetValue(control, out var host))
         {
+            scaledByAncestor |= IsScaledByAncestor(host);
             host.RemoveFromParent();
             _attachedParentByChild.Remove(host);
             _attachedParentByChild.Remove(control);
+            RestoreDetachedScaledSubtree(control, scaledByAncestor);
             return;
         }
 
@@ -3502,7 +3560,31 @@ public class SCEAdapter : ISCEAdapter
         {
             c.RemoveFromParent();
             ClearHierarchyTracking(control, clearChildren: false);
+            RestoreDetachedScaledSubtree(control, scaledByAncestor);
         }
+    }
+
+    /// <summary><paramref name="control"/> 是不是在某个正在缩放的根底下（不算它自己是根的情况：自己的缩放由自己的补间收尾）。</summary>
+    private bool IsScaledByAncestor(object control)
+        => !_fallbackScaleActiveRoots.Contains(control) && IsUnderActiveScaleRoot(control);
+
+    /// <summary>
+    /// 缩放途中被摘下（隐藏）的子树：摘下后把整棵子树还原成缩放前的快照。
+    ///
+    /// 缩放结束时只还原<b>还挂在根底下</b>的节点（按挂接关系收集子树），途中被摘下的这一棵够不着，
+    /// 就一直停在被摘那一刻的缩放上；之后再显示挂回去，挂回时只重推子树根自己的位置尺寸，里面的子控件仍是缩小的。
+    /// 典型场景：弹窗打开动画播到一半切控制器页，把一整块藏起来（2026-10-20 万宝楼：打开时先显示等待页，
+    /// 服务端回音到了切成拍卖现场，等待页停在 0.93 倍；拍卖结束切回等待页，门口整张图缩在左上角）。
+    /// 摘下之后它已不在任何缩放的根底下，还原直接写回快照里的原始位置尺寸；挂回时若又挂进正在缩放的子树，由挂接那边按缩放重摆。
+    /// </summary>
+    private void RestoreDetachedScaledSubtree(object control, bool scaledByAncestor)
+    {
+        if (!scaledByAncestor)
+        {
+            return;
+        }
+
+        RestoreSubtreeBaseRects(CollectSubtreeNodes(control));
     }
 
     public void OnClick(object control, Action handler)

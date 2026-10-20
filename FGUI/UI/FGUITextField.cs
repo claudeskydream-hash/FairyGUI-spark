@@ -7,7 +7,11 @@ using FairyGUI.Utils;
 
 namespace FairyGUI;
 
-public class GTextField : GObject
+/// <summary>
+/// 文本。实现 <see cref="IColorGear"/>（同官方 FairyGUI）：颜色齿轮（gearColor）、动效里的颜色帧都改它的 <see cref="Color"/>。
+/// 2026-10-20 之前漏了这个接口，文本上的颜色齿轮一律不生效、字停在发布时的颜色。
+/// </summary>
+public class GTextField : GObject, IColorGear
 {
     // 静态标志：记录哪些警告已经显示过（避免重复警告）
     private static bool _warnedLetterSpacing = false;
@@ -318,12 +322,62 @@ public class GTextField : GObject
             _warnedLetterSpacing = true;
         }
 
-        // TODO: 实现AutoSize逻辑
-        // 目前依赖SCE Label的自动尺寸功能
-        if (_autoSize != AutoSizeType.None)
+        // 自动大小：目前只做「高度」（宽度固定、按内容换行撑高，气泡这类用）。
+        // 「宽高都自动」（FGUI 默认）还没接：一接全工程的单行文字宽度都会跟着变，牵动大量关联，另议。
+        if (_autoSize == AutoSizeType.Height)
         {
-//             Game.Logger.LogInformation($"[FGUI] TextField '{Name}' AutoSize={_autoSize} - relying on SCE Label auto-sizing");
+            RequestAutoHeight(displayText);
         }
+    }
+
+    /// <summary>上次量高度时的内容（文字、字号、宽度、单行、行距），没变就不重量。</summary>
+    private string? _autoHeightKey;
+
+    /// <summary>FGUI 文本框上下各留 2 像素（同官方 FairyGUI 的 GUTTER），引擎量的是纯文字高度。</summary>
+    private const float AutoHeightGutter = 4f;
+
+    /// <summary>
+    /// autoSize = 高度：请引擎按当前宽度把文字排一遍、量出实际高度，回来后改自己的高度（<see cref="OnAutoHeightMeasured"/>），
+    /// 关联在它身上的控件（如气泡底板「高→高」）随之变高。引擎排版在帧末，所以高度晚一帧到位。
+    /// 空文字不量（保持原高度）。
+    /// </summary>
+    private void RequestAutoHeight(string displayText)
+    {
+        var key = displayText + "\u0001" + _fontSize + "\u0001" + _width + "\u0001" + _singleLine + "\u0001" + _leading;
+        if (key == _autoHeightKey)
+        {
+            return;
+        }
+
+        _autoHeightKey = key;
+        if (string.IsNullOrEmpty(displayText) || NativeObject == null)
+        {
+            return;
+        }
+
+        Render.SCERenderContext.Instance.Adapter?.RequestAutoHeight(NativeObject, OnAutoHeightMeasured);
+    }
+
+    /// <summary>
+    /// 引擎量回来了：原生尺寸含内容缩放与祖先缩放，按「原生宽 ÷ FGUI 宽」折回 FGUI 坐标，加上下留白就是新高度。
+    /// 和现在差不到半行的不改 —— 引擎与 FGUI 编辑器的字体度量差几个像素，单行文字保持编辑器里的高度，免得牵动关联的控件挪位；
+    /// 行数变了（差一整行以上）才改。
+    /// </summary>
+    private void OnAutoHeightMeasured(SizeF native)
+    {
+        if (_width <= 0f || native.Width <= 0f)
+        {
+            return;
+        }
+
+        var ratio = native.Width / _width;
+        var height = (native.Height / ratio) + AutoHeightGutter;
+        if (MathF.Abs(height - _height) < _fontSize * 0.5f)
+        {
+            return;
+        }
+
+        SetSize(_rawWidth, height);
     }
 }
 

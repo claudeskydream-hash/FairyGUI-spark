@@ -77,6 +77,12 @@ public interface ISCEAdapter
     /// 0 = 默认行高，0.5 = 1.5 倍）。对应 FGUI 的 <c>leading</c>（行距），换算在 GTextField 里做。
     /// </summary>
     void SetLineSpacing(object control, float ratio);
+    /// <summary>
+    /// 量文字实际要多高（FGUI 的 autoSize = 高度）：宽度保持不变，原生高度放开成自动，
+    /// 引擎排完版（一般在帧末）把原生控件的实际尺寸（DIP，含内容缩放）交给 <paramref name="measured"/>。
+    /// 同一个控件再请求会顶掉上一次还没回来的；不是文字控件的直接忽略。
+    /// </summary>
+    void RequestAutoHeight(object control, Action<SizeF> measured);
     /// <summary>设置文字描边（size&lt;=0 表示关闭）。</summary>
     void SetTextStroke(object control, Color color, float size);
     /// <summary>设置文字阴影（offset 为像素偏移，Transparent/零偏移表示关闭）。</summary>
