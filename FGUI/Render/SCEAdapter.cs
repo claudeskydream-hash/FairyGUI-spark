@@ -1053,13 +1053,18 @@ public class SCEAdapter : ISCEAdapter
         }
     }
 
+    /// <summary>
+    /// 置灰<b>只改外观</b>（染灰，染不了就压低透明度），<b>不禁用控件</b>：同 FairyGUI 原版，grayed 与 touchable 是两回事，
+    /// 「点不了」只归 <see cref="SetTouchable"/> 管（<c>GObject.Enabled = false</c> 会两个一起设）。
+    /// 早先这里会 <c>Disable()</c> 原生控件，被禁用的原生控件会吞掉指针事件、不再转发给外层按钮 ——
+    /// 置灰的子控件盖在按钮上时整块点不动（2026-10-22 锁妖塔地图未解锁的楼层节点点不开）。
+    /// </summary>
     public void SetGrayed(object control, bool grayed)
     {
         if (control is Control c)
         {
             if (grayed)
             {
-                c.Disable();
                 if (!TryApplyNativeTint(c, Color.FromArgb(255, 170, 170, 170)))
                 {
                     var baseAlpha = _controlAlphaStates.TryGetValue(control, out var alpha)
@@ -1070,7 +1075,6 @@ public class SCEAdapter : ISCEAdapter
             }
             else
             {
-                c.Enable();
                 _ = TryApplyNativeTint(c, Color.White);
                 if (_controlAlphaStates.TryGetValue(control, out var alpha))
                 {
