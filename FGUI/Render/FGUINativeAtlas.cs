@@ -13,7 +13,11 @@ namespace FairyGUI.Render;
 /// 按 FGUI 发布的描述文件生成。逻辑名 = <see cref="LogicalPath"/>，两边必须一致。
 ///
 /// <b>原型阶段</b>：默认关，由项目在 FGUI 初始化前打开 <see cref="Enabled"/>。
-/// 不走这条路的：序列帧、填充图（进度条等）、旋转打包的图 —— 照旧用 Canvas / 专用控件。
+/// 不走这条路的：填充图（进度条等）、旋转打包的图 —— 照旧用 Canvas / 专用控件。
+///
+/// <b>序列帧（MovieClip）</b>：每一帧都是图集里的一张子图（id = <c>动画id_帧号</c>），也登记成原生图集逻辑名；
+/// 控件建成普通控件，切帧时换 Image 逻辑名（同一张图集，已加载，不闪）。见 <see cref="CanUse(GMovieClip)"/>。
+/// 原来走 Canvas：先画进 Canvas 自己的帧缓冲再贴到界面上，半透明像素颜色被压暗，光效发灰发银（2026-10-23 金币扫光实测）。
 /// </summary>
 public static class FGUINativeAtlas
 {
@@ -52,8 +56,42 @@ public static class FGUINativeAtlas
         return true;
     }
 
+    /// <summary>
+    /// 这个序列帧要不要用原生控件画：每一帧的子图都在、没旋转、没裁边。
+    /// 裁过边的帧不行 —— 原生图集按 OriginSize 拉满，而 MovieClip 本来也不认帧偏移，帧必须是完整尺寸。
+    /// </summary>
+    public static bool CanUse(GMovieClip clip)
+    {
+        if (!Enabled)
+        {
+            return false;
+        }
+
+        var item = clip.PackageItem;
+        var owner = item?.Owner;
+        var frames = item?.MovieClipFrames;
+        if (owner == null || frames == null || frames.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var frame in frames)
+        {
+            var sprite = string.IsNullOrEmpty(frame.SpriteId) ? null : owner.GetSprite(frame.SpriteId!);
+            if (sprite == null || sprite.Rotated || IsTrimmed(sprite))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /// <summary>引擎原生图集里的逻辑名（控件 Image 属性写这个，不需要真有这个文件）。</summary>
     public static string LogicalPath(PackageItem item) => $"image/fguiatlas/{item.Owner!.Name}/{item.Id}.png";
+
+    /// <summary>序列帧某一帧的逻辑名（帧子图 id = <c>动画id_帧号</c>，和图集配置生成器一致）。</summary>
+    public static string FrameLogicalPath(PackageItem clipItem, string spriteId) => $"image/fguiatlas/{clipItem.Owner!.Name}/{spriteId}.png";
 
     private static bool IsTrimmed(AtlasSprite sprite)
     {

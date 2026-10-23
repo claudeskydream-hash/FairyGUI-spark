@@ -159,10 +159,11 @@ public class SCERenderContext
     private object? CreateImageControl(GImage image)
     {
         if (_adapter == null) return null;
-        if (image is GMovieClip)
+        if (image is GMovieClip movieClip)
         {
-            // MovieClip uses Canvas frame drawing to avoid Control.Image path swap flicker.
-            return _adapter.CreateCanvas();
+            // 帧都登记进原生图集的：普通控件 + 切帧换逻辑名（见 FGUINativeAtlas.CanUse(GMovieClip)）。
+            // 其余照旧用 Canvas 逐帧画（避免散图换路径时闪烁）。
+            return FGUINativeAtlas.CanUse(movieClip) ? _adapter.CreatePanel() : _adapter.CreateCanvas();
         }
 
         if (image.FillMethod != FillMethod.None)
@@ -506,6 +507,18 @@ public class SCERenderContext
         }
 
         packageItem.Owner?.GetItemAsset(packageItem);
+
+        // 引擎原生图集：控件 Image 换成当前帧的逻辑名（建控件时已按 FGUINativeAtlas.CanUse 选成普通控件）。
+        if (native is not Canvas && FGUINativeAtlas.CanUse(movieClip))
+        {
+            var spriteId = movieClip.GetCurrentFrameSpriteId();
+            if (!string.IsNullOrEmpty(spriteId))
+            {
+                _adapter.SetBackgroundImage(native, FGUINativeAtlas.FrameLogicalPath(packageItem, spriteId!));
+            }
+
+            return;
+        }
 
         // Atlas 模式：当前帧从图集区域绘制（帧的 SpriteId -> 图集 sprite -> region）
         if (!UIRuntime.ControlOnlyImageMode)
