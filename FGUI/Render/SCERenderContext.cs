@@ -1828,6 +1828,12 @@ public class SCERenderContext
         if (obj is FGUIRoot) return;
         float scaleFactor = UIRuntime.ContentScaleFactor;
         _adapter.SetSize(obj.NativeObject, obj.Width * scaleFactor, obj.Height * scaleFactor);
+        if (MathF.Abs(obj.Rotation) >= 0.0001f)
+        {
+            // 旋转的轴心补偿跟尺寸有关（见 RotationPivotOffset），尺寸变了位置要跟着重算。
+            var renderPos = ResolveRenderPosition(obj);
+            _adapter.SetPosition(obj.NativeObject, renderPos.X * scaleFactor, renderPos.Y * scaleFactor);
+        }
         if (obj is GImage image)
         {
             image.ApplyNativeVisualState();
@@ -1907,7 +1913,37 @@ public class SCERenderContext
             y -= obj.Height * obj.PivotY;
         }
 
-        return new PointF(x, y);
+        var offset = RotationPivotOffset(obj);
+        return new PointF(x + offset.X, y + offset.Y);
+    }
+
+    /// <summary>
+    /// 旋转按 FairyGUI 的轴心转：FairyGUI 绕轴心（Pivot，默认左上角 0,0）旋转，引擎控件的 Rotation 却固定绕自身中心转。
+    /// 把控件左上角挪 <c>v − R·v</c>（v = 轴心 − 中心，R = 旋转），绕中心转之后轴心就落回原处，画面与 FGUI 编辑器一致。
+    /// 不补的话：旋转过的字 / 图会偏开（轴心 0,0 转 -20° 的绶带字落到右下方），挂牌摆动绕中心晃而不是绕顶上的挂点。
+    /// </summary>
+    internal static PointF RotationPivotOffset(GObject obj)
+    {
+        var rotation = obj.Rotation;
+        if (MathF.Abs(rotation) < 0.0001f)
+        {
+            return PointF.Empty;
+        }
+
+        var vx = obj.Width * (obj.PivotX - 0.5f);
+        var vy = obj.Height * (obj.PivotY - 0.5f);
+        if (MathF.Abs(vx) < 0.0001f && MathF.Abs(vy) < 0.0001f)
+        {
+            return PointF.Empty;
+        }
+
+        // 屏幕坐标 y 朝下，正角度 = 顺时针（与 FairyGUI、引擎一致）。
+        var radians = rotation * MathF.PI / 180f;
+        var cos = MathF.Cos(radians);
+        var sin = MathF.Sin(radians);
+        var rx = vx * cos - vy * sin;
+        var ry = vx * sin + vy * cos;
+        return new PointF(vx - rx, vy - ry);
     }
 
     private static void LogDemoGraphProbe(string stage, GObject obj)

@@ -101,6 +101,11 @@ public class GImage : GObject, IColorGear
             renderY -= _height * _pivotY;
         }
 
+        // 旋转按轴心转（引擎绕中心转），同 SCERenderContext.ResolveRenderPosition —— 图片自己在这里重摆位置，不补就把那边的补偿冲掉了。
+        var rotationOffset = Render.SCERenderContext.RotationPivotOffset(this);
+        renderX += rotationOffset.X;
+        renderY += rotationOffset.Y;
+
         var renderWidth = MathF.Max(0f, _width);
         var renderHeight = MathF.Max(0f, _height);
         var fillAmount = Math.Clamp(_fillAmount, 0f, 1f);

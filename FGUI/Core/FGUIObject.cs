@@ -369,7 +369,15 @@ public class GObject : EventDispatcher
     protected virtual void HandlePositionChanged() => SCERenderContext.Instance.UpdatePosition(this);
     protected virtual void HandleSizeChanged() => SCERenderContext.Instance.UpdateSize(this);
     protected virtual void HandleScaleChanged() { if (NativeObject != null) SCERenderContext.Instance.Adapter?.SetScale(NativeObject, _scaleX, _scaleY); }
-    protected virtual void HandleRotationChanged() { if (NativeObject != null) SCERenderContext.Instance.Adapter?.SetRotation(NativeObject, _rotation); }
+    protected virtual void HandleRotationChanged()
+    {
+        if (NativeObject != null)
+        {
+            SCERenderContext.Instance.Adapter?.SetRotation(NativeObject, _rotation);
+            // 引擎绕中心转，FairyGUI 绕轴心转：角度一变，轴心补偿的位移跟着变（见 SCERenderContext.RotationPivotOffset）。
+            SCERenderContext.Instance.UpdatePosition(this);
+        }
+    }
     protected virtual void HandleAlphaChanged() => SCERenderContext.Instance.UpdateAlpha(this);
     protected virtual void HandleVisibleChanged()
     {
